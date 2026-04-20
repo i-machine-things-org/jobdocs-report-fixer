@@ -8,17 +8,21 @@ then checks the staged diff against known S&P.md anti-patterns.
 import sys
 import json
 import re
+import shutil
 import subprocess
 
 
 def get_staged_diff() -> str:
+    git = shutil.which("git")
+    if not git:
+        return ""
     try:
         result = subprocess.run(
-            ["git", "diff", "--cached"],
+            [git, "diff", "--cached"],
             capture_output=True, text=True
         )
         return result.stdout
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return ""
 
 
@@ -26,7 +30,7 @@ def main():
     try:
         data = json.load(sys.stdin)
         command = data.get("command", "")
-    except Exception:
+    except json.JSONDecodeError:
         sys.exit(0)
 
     # Only run on git commit commands

@@ -97,7 +97,12 @@ Tag releases using `vMAJOR.MINOR.PATCH` from `master` only.
 After every merge to `master`, count commits since the last `v*` tag:
 
 ```bash
-git log $(git describe --tags --abbrev=0)..master --oneline
+last_tag=$(git describe --tags --abbrev=0 2>/dev/null)
+if [ -n "$last_tag" ]; then
+  git log "$last_tag"..master --oneline
+else
+  git log master --oneline
+fi
 ```
 
 - **5 or more `feat:` commits** → bump MINOR

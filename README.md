@@ -17,7 +17,7 @@ An external JobDocs plugin that transforms Excel job reports to match a template
 ## Setup
 
 1. Clone or copy this folder alongside `JobDocs/` (sibling directory):
-   ```
+   ```text
    H:\Jobdocs\
    ├── JobDocs\
    └── jobdocs-report-fixer\
@@ -36,7 +36,7 @@ An external JobDocs plugin that transforms Excel job reports to match a template
 
 ## Plugin Structure
 
-```
+```text
 jobdocs-report-fixer/
 ├── __init__.py
 ├── module.py          # ReportingModule(BaseModule)
@@ -59,3 +59,8 @@ Changes to shared template files (`.claude/CLAUDE.md`, `.claude/S&P.md` structur
 repo before or alongside merging here.
 
 See `.claude/CLAUDE.md` for the full branching, commit, and review workflow.
+
+> **Note:** The pre-commit S&P hook (`.claude/hooks/pre_commit_sp_check.py`) is triggered
+> via Claude Code's `PreToolUse` hook, not by a standard `git commit` hook. It runs when
+> Claude Code executes a `git commit` bash command. Plain `git commit` from a terminal
+> bypasses it by design — the check is Claude-only.
