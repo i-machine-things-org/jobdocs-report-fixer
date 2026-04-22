@@ -2,7 +2,7 @@ reviews:
   auto_review:
     enabled: true
   path_filters:
-    - "!.claude/S&P.md"
+    - "!.claude/**"
   tools:
     ruff:
       ignore:
