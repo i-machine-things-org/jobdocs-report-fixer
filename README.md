@@ -53,7 +53,7 @@ jobdocs-report-fixer/
 
 ## Development
 
-This plugin is forked from [jobdocs-plugin-template](../jobdocs-plugin-template).
+This plugin is forked from [jobdocs-plugin-template](https://github.com/i-machine-things/jobdocs-plugin-template).
 Changes to shared template files (`.claude/CLAUDE.md`, `.claude/S&P.md` structure,
 `settings.json`, `hooks/`, `README.md` structure) must be PR'd back to the template
 repo before or alongside merging here.
