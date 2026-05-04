@@ -9,6 +9,7 @@ and exports formatted Excel files with highlighting.
 import re
 import sys
 import json
+import traceback
 from pathlib import Path
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -1132,6 +1133,7 @@ class ReportingModule(BaseModule):
 
             except Exception as e:
                 self._log(f"  ERROR: {str(e)}")
+                self._log(traceback.format_exc())
 
         # Final summary
         self._log("=" * 50)
@@ -1161,9 +1163,19 @@ class ReportingModule(BaseModule):
         pattern = re.compile(r'\bD[OX]-[A-Z]\d+\b', re.IGNORECASE)
         ratings = [''] * len(source_df)
         for col in source_df.columns:
-            col_values = source_df[col].astype(str).tolist()
+            try:
+                series = source_df[col]
+                # Guard: skip non-scalar columns (e.g. duplicate column names produce a DataFrame)
+                if not isinstance(series, pd.Series):
+                    continue
+                col_values = series.astype(str).tolist()
+            except Exception:
+                continue
             for i, val in enumerate(col_values):
                 if not ratings[i]:
+                    # Ensure val is a plain string before passing to re
+                    if not isinstance(val, str):
+                        val = '' if pd.isna(val) else str(val)
                     match = pattern.search(val)
                     if match:
                         ratings[i] = match.group(0).upper()
@@ -1201,6 +1213,18 @@ class ReportingModule(BaseModule):
         removed_count = len(set(source_df.columns) - set(self.template_columns))
         self._log(f"Removed {removed_count} columns not in template")
         self._log(f"Result: {len(df_fixed)} rows x {len(df_fixed.columns)} columns")
+
+        # Normalize string-key columns — Excel/pandas reads blank cells as float NaN,
+        # which causes TypeError in regex and groupby operations downstream.
+        for _col in ('Customer PO Number', 'Job ID'):
+            if _col in df_fixed.columns:
+                _s = df_fixed[_col]
+                df_fixed[_col] = _s.where(_s.isna(), _s.astype(str).str.strip())
+        if 'Line' in df_fixed.columns:
+            _s = df_fixed['Line']
+            # Strip float suffix (1.0 → '1') for consistent composite-key matching
+            _str_vals = _s.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            df_fixed['Line'] = _s.where(_s.isna(), _str_vals)
 
         # Merge Promise Date from delivery schedule (if loaded)
         if self.delivery_df is not None and 'Job ID' in df_fixed.columns:
@@ -1254,9 +1278,10 @@ class ReportingModule(BaseModule):
                 df_fixed['Classification'] = ''
             col_vals = df_fixed['Classification'].tolist()
             for i, rating in enumerate(dpas_ratings):
-                if rating:
+                if rating and i < len(col_vals):
                     existing = col_vals[i]
-                    if existing is None or str(existing).strip() in ('', 'nan', 'None'):
+                    if existing is None or (not isinstance(existing, str) and pd.isna(existing)) \
+                            or str(existing).strip() in ('', 'nan', 'None'):
                         col_vals[i] = rating
             df_fixed['Classification'] = col_vals
 
