@@ -35,6 +35,23 @@ Review this file before making changes to the codebase.
 
 ---
 
+## 2026-05-05 — `module.py` (DPAS classification not filling for all customers)
+
+**Review:** DPAS ratings detected from delivery schedule but Classification column remained NaN for some customers (Retech).
+**Result:** Fixed — two separate root causes identified and resolved.
+
+### Findings
+
+1. **Regex `\b` word boundaries blocked embedded DPAS strings**
+   - Pattern `\bD[OX]-[A-Z]\d+\b` requires a word boundary before `D`
+   - Delivery schedule column G and source report descriptions use concatenated form `DPASDX-C2INSSHIP` — `D` in `DX` is preceded by `S` (word char), so no `\b`
+   - Fix: relaxed to `D[OX]-[A-Z]\d+` (no boundaries); `\d+` greedily stops at non-digits already
+
+2. **`blank_mask` sentinel set blocked fill when source Classification was non-blank**
+   - DPAS fill only ran when Classification was in `('', 'nan', 'None', '<NA>', 'NaT')`
+   - Source report cells with values like `0.0` or other non-blank defaults were not in the set
+   - Fix: removed `blank_mask` entirely — DPAS from delivery schedule is authoritative, fill unconditionally
+
 <!-- Add entries here as CodeRabbit reviews land. Format:
 
 ## YYYY-MM-DD — `path/to/file.py` (short description)
