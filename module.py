@@ -62,6 +62,7 @@ class ReportingModule(BaseModule):
         # State
         self.source_df = None
         self.delivery_df = None
+        self.dpas_by_job = {}   # job_id (str) -> DPAS rating (str), populated from delivery schedule
         self.template_columns = None
         self.last_output_path = None
         self.customer_column = None  # Detected customer column name
@@ -283,6 +284,23 @@ class ReportingModule(BaseModule):
                 return
             job_col = cols[0]   # Column A: job number
             promise_col = cols[5]  # Column F: promise date
+
+            # Scan all columns for DPAS ratings before subsetting, keyed by Job ID.
+            # We do this here so positional alignment with the transformed report is
+            # never an issue — lookups are by stable Job ID.
+            dpas_pattern = re.compile(r'\bD[OX]-[A-Z]\d+\b', re.IGNORECASE)
+            self.dpas_by_job = {}
+            for _, row in df.iterrows():
+                job_id = str(row.iloc[0]).strip()
+                if not job_id or job_id == 'nan':
+                    continue
+                for cell_val in row.astype(str):
+                    m = dpas_pattern.search(cell_val)
+                    if m:
+                        self.dpas_by_job[job_id] = m.group(0).upper()
+                        break
+            if self.dpas_by_job:
+                self._log(f"DPAS ratings found for {len(self.dpas_by_job)} job(s) in delivery schedule")
 
             self.delivery_df = df[[job_col, promise_col]].copy()
             self.delivery_df.columns = ['_delivery_job_id', 'Promise Date']
@@ -1169,13 +1187,11 @@ class ReportingModule(BaseModule):
                 if not isinstance(series, pd.Series):
                     continue
                 col_values = series.astype(str).tolist()
-            except Exception:
+            except Exception as exc:
+                self._log(f"Warning: skipped column '{col}' during DPAS scan: {exc}")
                 continue
             for i, val in enumerate(col_values):
                 if not ratings[i]:
-                    # Ensure val is a plain string before passing to re
-                    if not isinstance(val, str):
-                        val = '' if pd.isna(val) else str(val)
                     match = pattern.search(val)
                     if match:
                         ratings[i] = match.group(0).upper()
@@ -1225,6 +1241,32 @@ class ReportingModule(BaseModule):
             # Strip float suffix (1.0 → '1') for consistent composite-key matching
             _str_vals = _s.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
             df_fixed['Line'] = _s.where(_s.isna(), _str_vals)
+
+        # Populate Classification from DPAS ratings.
+        # Primary source: self.dpas_by_job built from delivery schedule (keyed by Job ID,
+        # so merge-order changes cannot cause misalignment).
+        # Fallback: scan source_df directly when no delivery schedule is loaded.
+        dpas_map = self.dpas_by_job if self.dpas_by_job else {}
+        if not dpas_map:
+            raw_ratings = self._extract_dpas_ratings(source_df)
+            if 'Job ID' in df_fixed.columns:
+                job_ids_list = df_fixed['Job ID'].astype(str).str.strip().tolist()
+                dpas_map = {
+                    jid: r for jid, r in zip(job_ids_list, raw_ratings) if r
+                }
+        if dpas_map and 'Job ID' in df_fixed.columns:
+            self._log(f"Detected {len(dpas_map)} DPAS rating(s) — populating Classification column")
+            if 'Classification' not in df_fixed.columns:
+                df_fixed['Classification'] = ''
+            _blank = ('', 'nan', 'None', '<NA>', 'NaT')
+
+            def _apply_dpas(row):
+                existing = row['Classification']
+                if existing is None or str(existing).strip() in _blank:
+                    return dpas_map.get(str(row['Job ID']).strip(), existing)
+                return existing
+
+            df_fixed['Classification'] = df_fixed.apply(_apply_dpas, axis=1)
 
         # Merge Promise Date from delivery schedule (if loaded)
         if self.delivery_df is not None and 'Job ID' in df_fixed.columns:
