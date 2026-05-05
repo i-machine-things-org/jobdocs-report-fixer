@@ -1192,6 +1192,8 @@ class ReportingModule(BaseModule):
                 continue
             for i, val in enumerate(col_values):
                 if not ratings[i]:
+                    if not isinstance(val, str):
+                        val = str(val) if val is not None else ''
                     match = pattern.search(val)
                     if match:
                         ratings[i] = match.group(0).upper()
@@ -1313,22 +1315,6 @@ class ReportingModule(BaseModule):
 
             unique_pos = df_fixed['Customer PO Number'].nunique()
             self._log(f"Updated dates for {unique_pos} unique POs")
-
-        # Extract DPAS ratings and populate Classification column
-        dpas_ratings = self._extract_dpas_ratings(source_df)
-        dpas_found = sum(1 for r in dpas_ratings if r)
-        if dpas_found > 0:
-            self._log(f"Detected {dpas_found} DPAS rating(s) — populating Classification column")
-            if 'Classification' not in df_fixed.columns:
-                df_fixed['Classification'] = ''
-            col_vals = df_fixed['Classification'].tolist()
-            for i, rating in enumerate(dpas_ratings):
-                if rating and i < len(col_vals):
-                    existing = col_vals[i]
-                    if existing is None or (not isinstance(existing, str) and pd.isna(existing)) \
-                            or str(existing).strip() in ('', 'nan', 'None'):
-                        col_vals[i] = rating
-            df_fixed['Classification'] = col_vals
 
         return df_fixed
 
