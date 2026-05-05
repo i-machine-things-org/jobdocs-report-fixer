@@ -288,7 +288,7 @@ class ReportingModule(BaseModule):
             # Scan all columns for DPAS ratings before subsetting, keyed by Job ID.
             # We do this here so positional alignment with the transformed report is
             # never an issue — lookups are by stable Job ID.
-            dpas_pattern = re.compile(r'\bD[OX]-[A-Z]\d+\b', re.IGNORECASE)
+            dpas_pattern = re.compile(r'D[OX]-[A-Z]\d+', re.IGNORECASE)
             self.dpas_by_job = {}
             for _, row in df.iterrows():
                 job_id = str(row.iloc[0]).strip()
@@ -1178,7 +1178,7 @@ class ReportingModule(BaseModule):
     def _extract_dpas_ratings(self, source_df: 'pd.DataFrame') -> list:
         """Scan all source columns for DPAS rating patterns (e.g. DX-A3, DO-B1).
         Returns a positional list aligned with source_df rows."""
-        pattern = re.compile(r'\bD[OX]-[A-Z]\d+\b', re.IGNORECASE)
+        pattern = re.compile(r'D[OX]-[A-Z]\d+', re.IGNORECASE)
         ratings = [''] * len(source_df)
         for col in source_df.columns:
             try:
