@@ -294,8 +294,8 @@ class ReportingModule(BaseModule):
                 job_id = str(row.iloc[0]).strip()
                 if not job_id or job_id == 'nan':
                     continue
-                for cell_val in row.astype(str):
-                    m = dpas_pattern.search(cell_val)
+                for cell_val in row:
+                    m = dpas_pattern.search(str(cell_val))
                     if m:
                         self.dpas_by_job[job_id] = m.group(0).upper()
                         break
