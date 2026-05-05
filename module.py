@@ -1255,18 +1255,21 @@ class ReportingModule(BaseModule):
                     jid: r for jid, r in zip(job_ids_list, raw_ratings) if r
                 }
         if dpas_map and 'Job ID' in df_fixed.columns:
-            self._log(f"Detected {len(dpas_map)} DPAS rating(s) — populating Classification column")
-            if 'Classification' not in df_fixed.columns:
-                df_fixed['Classification'] = ''
-            _blank = ('', 'nan', 'None', '<NA>', 'NaT')
-
-            def _apply_dpas(row):
-                existing = row['Classification']
-                if existing is None or str(existing).strip() in _blank:
-                    return dpas_map.get(str(row['Job ID']).strip(), existing)
-                return existing
-
-            df_fixed['Classification'] = df_fixed.apply(_apply_dpas, axis=1)
+            try:
+                self._log(f"Detected {len(dpas_map)} DPAS rating(s) — populating Classification column")
+                if 'Classification' not in df_fixed.columns:
+                    df_fixed['Classification'] = ''
+                # Vectorized: map job IDs to DPAS ratings, then fill only blank cells.
+                job_ids = df_fixed['Job ID'].astype(str).str.strip()
+                mapped = job_ids.map(dpas_map)  # NaN where job ID not in dpas_map
+                cls_str = df_fixed['Classification'].astype(str).str.strip()
+                blank_mask = cls_str.isin(('', 'nan', 'None', '<NA>', 'NaT'))
+                fill_mask = blank_mask & mapped.notna()
+                if fill_mask.any():
+                    df_fixed.loc[fill_mask, 'Classification'] = mapped[fill_mask]
+                    self._log(f"  Filled {int(fill_mask.sum())} Classification cell(s)")
+            except Exception as exc:
+                self._log(f"Warning: DPAS classification failed: {exc}")
 
         # Merge Promise Date from delivery schedule (if loaded)
         if self.delivery_df is not None and 'Job ID' in df_fixed.columns:
