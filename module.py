@@ -1252,7 +1252,7 @@ class ReportingModule(BaseModule):
             if 'Job ID' in df_fixed.columns:
                 job_ids_list = df_fixed['Job ID'].astype(str).str.strip().tolist()
                 dpas_map = {
-                    jid: r for jid, r in zip(job_ids_list, raw_ratings) if r
+                    jid: r for jid, r in zip(job_ids_list, raw_ratings, strict=True) if r
                 }
         if dpas_map and 'Job ID' in df_fixed.columns:
             try:
