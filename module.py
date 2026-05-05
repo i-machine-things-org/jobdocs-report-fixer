@@ -1259,19 +1259,25 @@ class ReportingModule(BaseModule):
         if dpas_map and 'Job ID' in df_fixed.columns:
             try:
                 self._log(f"Detected {len(dpas_map)} DPAS rating(s) — populating Classification column")
+                self._log(f"  DPAS map keys: {list(dpas_map.keys())}")
                 if 'Classification' not in df_fixed.columns:
                     df_fixed['Classification'] = ''
-                # Vectorized: map job IDs to DPAS ratings, then fill only blank cells.
+                # Vectorized: map job IDs to DPAS ratings.
+                # Unconditional fill — DPAS from delivery schedule is authoritative; source
+                # Classification column typically contains no meaningful pre-existing value.
                 job_ids = df_fixed['Job ID'].astype(str).str.strip()
+                self._log(f"  df_fixed Job IDs: {job_ids.tolist()}")
                 mapped = job_ids.map(dpas_map)  # NaN where job ID not in dpas_map
-                cls_str = df_fixed['Classification'].astype(str).str.strip()
-                blank_mask = cls_str.isin(('', 'nan', 'None', '<NA>', 'NaT'))
-                fill_mask = blank_mask & mapped.notna()
+                fill_mask = mapped.notna()
                 if fill_mask.any():
                     df_fixed.loc[fill_mask, 'Classification'] = mapped[fill_mask]
-                    self._log(f"  Filled {int(fill_mask.sum())} Classification cell(s)")
+                    filled = df_fixed.loc[fill_mask, ['Job ID', 'Classification']].to_dict('records')
+                    self._log(f"  Filled {int(fill_mask.sum())} Classification cell(s): {filled}")
+                else:
+                    self._log(f"  WARNING: no job IDs matched dpas_map — check ID format above")
             except Exception as exc:
                 self._log(f"Warning: DPAS classification failed: {exc}")
+                self._log(traceback.format_exc())
 
         # Merge Promise Date from delivery schedule (if loaded)
         if self.delivery_df is not None and 'Job ID' in df_fixed.columns:
