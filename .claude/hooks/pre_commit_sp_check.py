@@ -8,8 +8,37 @@ then checks the staged diff against known S&P.md anti-patterns.
 import sys
 import json
 import re
+import shlex
 import shutil
 import subprocess
+
+
+def _is_git_commit_command(command: str) -> bool:
+    """Return True only when command invokes the git commit subcommand."""
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return bool(re.search(r"git\s+commit", command))
+
+    try:
+        git_idx = next(i for i, t in enumerate(tokens) if t == "git" or t.endswith("/git"))
+    except StopIteration:
+        return False
+
+    # Options that consume the following token as an argument
+    _ARG_OPTIONS = frozenset({"-C", "-c", "--exec-path", "--git-dir",
+                               "--work-tree", "--namespace", "--super-prefix",
+                               "--list-cmds"})
+    i = git_idx + 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in _ARG_OPTIONS:
+            i += 2
+        elif tok.startswith("-"):
+            i += 1
+        else:
+            return tok == "commit"
+    return False
 
 
 def get_staged_diff() -> str:
@@ -33,8 +62,7 @@ def main():
     except json.JSONDecodeError:
         sys.exit(0)
 
-    # Only run on git commit commands
-    if not re.search(r"git\s+commit", command):
+    if not _is_git_commit_command(command):
         sys.exit(0)
 
     diff = get_staged_diff()

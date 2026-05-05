@@ -1192,8 +1192,6 @@ class ReportingModule(BaseModule):
                 continue
             for i, val in enumerate(col_values):
                 if not ratings[i]:
-                    if not isinstance(val, str):
-                        val = str(val) if val is not None else ''
                     match = pattern.search(val)
                     if match:
                         ratings[i] = match.group(0).upper()
