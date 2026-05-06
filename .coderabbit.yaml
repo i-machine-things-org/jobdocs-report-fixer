@@ -1,0 +1,9 @@
+reviews:
+  auto_review:
+    enabled: true
+  path_filters:
+    - "!.claude/**"
+  tools:
+    ruff:
+      ignore:
+        - BLE001

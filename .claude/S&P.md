@@ -52,6 +52,8 @@ Review this file before making changes to the codebase.
    - Source report cells with values like `0.0` or other non-blank defaults were not in the set
    - Fix: removed `blank_mask` entirely — DPAS from delivery schedule is authoritative, fill unconditionally
 
+---
+
 ## 2026-05-06 — `module.py` (DPAS fill overwrites existing Classification + zip strict=True)
 
 **Review:** CodeRabbit flagged that the vectorized fill was unconditional (contradicts PR goal of never overwriting), and `zip(strict=True)` requires Python 3.10+.
