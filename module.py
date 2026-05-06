@@ -1251,8 +1251,12 @@ class ReportingModule(BaseModule):
             raw_ratings = self._extract_dpas_ratings(source_df)
             if 'Job ID' in df_fixed.columns:
                 job_ids_list = df_fixed['Job ID'].astype(str).str.strip().tolist()
+                if len(job_ids_list) != len(raw_ratings):
+                    raise ValueError(
+                        f"DPAS rating count mismatch: {len(job_ids_list)} job IDs vs {len(raw_ratings)} ratings"
+                    )
                 dpas_map = {
-                    jid: r for jid, r in zip(job_ids_list, raw_ratings, strict=True) if r
+                    jid: r for jid, r in zip(job_ids_list, raw_ratings) if r
                 }
         if dpas_map and 'Job ID' in df_fixed.columns:
             try:
@@ -1260,11 +1264,13 @@ class ReportingModule(BaseModule):
                 if 'Classification' not in df_fixed.columns:
                     df_fixed['Classification'] = ''
                 # Vectorized: map job IDs to DPAS ratings.
-                # Unconditional fill — DPAS from delivery schedule is authoritative; source
-                # Classification column typically contains no meaningful pre-existing value.
+                # Only fill where Classification is currently empty/NaN — never overwrite existing values.
                 job_ids = df_fixed['Job ID'].astype(str).str.strip()
                 mapped = job_ids.map(dpas_map)  # NaN where job ID not in dpas_map
-                fill_mask = mapped.notna()
+                empty_mask = df_fixed['Classification'].isna() | (
+                    df_fixed['Classification'].astype(str).str.strip() == ''
+                )
+                fill_mask = mapped.notna() & empty_mask
                 if fill_mask.any():
                     df_fixed.loc[fill_mask, 'Classification'] = mapped[fill_mask]
                     self._log(f"  Filled {int(fill_mask.sum())} Classification cell(s)")

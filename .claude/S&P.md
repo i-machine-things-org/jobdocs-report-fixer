@@ -52,6 +52,23 @@ Review this file before making changes to the codebase.
    - Source report cells with values like `0.0` or other non-blank defaults were not in the set
    - Fix: removed `blank_mask` entirely — DPAS from delivery schedule is authoritative, fill unconditionally
 
+## 2026-05-06 — `module.py` (DPAS fill overwrites existing Classification + zip strict=True)
+
+**Review:** CodeRabbit flagged that the vectorized fill was unconditional (contradicts PR goal of never overwriting), and `zip(strict=True)` requires Python 3.10+.
+**Result:** Fixed — fill now guarded by `empty_mask`; strict zip replaced with explicit length check + ValueError.
+
+### Findings
+
+1. **Classification fill ignored existing values**
+   - `fill_mask = mapped.notna()` overwrote any pre-existing Classification cell that had a DPAS mapping
+   - Fix: added `empty_mask = df_fixed['Classification'].isna() | (... == '')` and combined with `mapped.notna()`
+
+2. **`zip(strict=True)` is Python 3.10+**
+   - `requirements.txt` does not pin Python ≥ 3.10; using `strict=True` would break on Python 3.9
+   - Fix: replaced with explicit `len()` equality check and `raise ValueError` before the zip
+
+---
+
 <!-- Add entries here as CodeRabbit reviews land. Format:
 
 ## YYYY-MM-DD — `path/to/file.py` (short description)
