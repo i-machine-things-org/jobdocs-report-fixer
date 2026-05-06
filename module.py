@@ -9,6 +9,7 @@ and exports formatted Excel files with highlighting.
 import re
 import sys
 import json
+import traceback
 from pathlib import Path
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -61,6 +62,7 @@ class ReportingModule(BaseModule):
         # State
         self.source_df = None
         self.delivery_df = None
+        self.dpas_by_job = {}   # job_id (str) -> DPAS rating (str), populated from delivery schedule
         self.template_columns = None
         self.last_output_path = None
         self.customer_column = None  # Detected customer column name
@@ -282,6 +284,23 @@ class ReportingModule(BaseModule):
                 return
             job_col = cols[0]   # Column A: job number
             promise_col = cols[5]  # Column F: promise date
+
+            # Scan all columns for DPAS ratings before subsetting, keyed by Job ID.
+            # We do this here so positional alignment with the transformed report is
+            # never an issue — lookups are by stable Job ID.
+            dpas_pattern = re.compile(r'D[OX]-[A-Z]\d+', re.IGNORECASE)
+            self.dpas_by_job = {}
+            for _, row in df.iterrows():
+                job_id = str(row.iloc[0]).strip()
+                if not job_id or job_id == 'nan':
+                    continue
+                for cell_val in row:
+                    m = dpas_pattern.search(str(cell_val))
+                    if m:
+                        self.dpas_by_job[job_id] = m.group(0).upper()
+                        break
+            if self.dpas_by_job:
+                self._log(f"DPAS ratings found for {len(self.dpas_by_job)} job(s) in delivery schedule")
 
             self.delivery_df = df[[job_col, promise_col]].copy()
             self.delivery_df.columns = ['_delivery_job_id', 'Promise Date']
@@ -1132,6 +1151,7 @@ class ReportingModule(BaseModule):
 
             except Exception as e:
                 self._log(f"  ERROR: {str(e)}")
+                self._log(traceback.format_exc())
 
         # Final summary
         self._log("=" * 50)
@@ -1154,6 +1174,28 @@ class ReportingModule(BaseModule):
         summary += f"\nFiles saved to customer reports folders."
 
         self.show_info("Multi-Customer Export Complete", summary)
+
+    def _extract_dpas_ratings(self, source_df: 'pd.DataFrame') -> list:
+        """Scan all source columns for DPAS rating patterns (e.g. DX-A3, DO-B1).
+        Returns a positional list aligned with source_df rows."""
+        pattern = re.compile(r'D[OX]-[A-Z]\d+', re.IGNORECASE)
+        ratings = [''] * len(source_df)
+        for col in source_df.columns:
+            try:
+                series = source_df[col]
+                # Guard: skip non-scalar columns (e.g. duplicate column names produce a DataFrame)
+                if not isinstance(series, pd.Series):
+                    continue
+                col_values = series.astype(str).tolist()
+            except Exception as exc:
+                self._log(f"Warning: skipped column '{col}' during DPAS scan: {exc}")
+                continue
+            for i, val in enumerate(col_values):
+                if not ratings[i]:
+                    match = pattern.search(val)
+                    if match:
+                        ratings[i] = match.group(0).upper()
+        return ratings
 
     def _filter_letter_suffix_jobs(self, df: 'pd.DataFrame') -> 'pd.DataFrame':
         """Remove rows where Job ID ends in a letter (e.g. 12345A, 67890B).
@@ -1187,6 +1229,53 @@ class ReportingModule(BaseModule):
         removed_count = len(set(source_df.columns) - set(self.template_columns))
         self._log(f"Removed {removed_count} columns not in template")
         self._log(f"Result: {len(df_fixed)} rows x {len(df_fixed.columns)} columns")
+
+        # Normalize string-key columns — Excel/pandas reads blank cells as float NaN,
+        # which causes TypeError in regex and groupby operations downstream.
+        for _col in ('Customer PO Number', 'Job ID'):
+            if _col in df_fixed.columns:
+                _s = df_fixed[_col]
+                df_fixed[_col] = _s.where(_s.isna(), _s.astype(str).str.strip())
+        if 'Line' in df_fixed.columns:
+            _s = df_fixed['Line']
+            # Strip float suffix (1.0 → '1') for consistent composite-key matching
+            _str_vals = _s.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            df_fixed['Line'] = _s.where(_s.isna(), _str_vals)
+
+        # Populate Classification from DPAS ratings.
+        # Primary source: self.dpas_by_job built from delivery schedule (keyed by Job ID,
+        # so merge-order changes cannot cause misalignment).
+        # Fallback: scan source_df directly when no delivery schedule is loaded.
+        dpas_map = self.dpas_by_job if self.dpas_by_job else {}
+        if not dpas_map:
+            raw_ratings = self._extract_dpas_ratings(source_df)
+            if 'Job ID' in df_fixed.columns:
+                job_ids_list = df_fixed['Job ID'].astype(str).str.strip().tolist()
+                if len(job_ids_list) != len(raw_ratings):
+                    raise ValueError(
+                        f"DPAS rating count mismatch: {len(job_ids_list)} job IDs vs {len(raw_ratings)} ratings"
+                    )
+                dpas_map = {
+                    jid: r for jid, r in zip(job_ids_list, raw_ratings) if r
+                }
+        if dpas_map and 'Job ID' in df_fixed.columns:
+            try:
+                self._log(f"Detected {len(dpas_map)} DPAS rating(s) — populating Classification column")
+                if 'Classification' not in df_fixed.columns:
+                    df_fixed['Classification'] = ''
+                # Vectorized: map job IDs to DPAS ratings.
+                # Only fill where Classification is currently empty/NaN — never overwrite existing values.
+                job_ids = df_fixed['Job ID'].astype(str).str.strip()
+                mapped = job_ids.map(dpas_map)  # NaN where job ID not in dpas_map
+                empty_mask = df_fixed['Classification'].isna() | (
+                    df_fixed['Classification'].astype(str).str.strip() == ''
+                )
+                fill_mask = mapped.notna() & empty_mask
+                if fill_mask.any():
+                    df_fixed.loc[fill_mask, 'Classification'] = mapped[fill_mask]
+                    self._log(f"  Filled {int(fill_mask.sum())} Classification cell(s)")
+            except Exception as exc:
+                self._log(f"Warning: DPAS classification failed: {exc}")
 
         # Merge Promise Date from delivery schedule (if loaded)
         if self.delivery_df is not None and 'Job ID' in df_fixed.columns:
