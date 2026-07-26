@@ -69,13 +69,12 @@ This repository was forked from `jobdocs-plugin-template`. The following files a
 
 ```
 .claude/CLAUDE.md
-.claude/S&P.md               (format/structure only)
 .claude/settings.json
 .claude/hooks/pre_commit_sp_check.py
 README.md                    (structure/sections, not plugin-specific content)
 ```
 
-Plugin-specific logic, UI, and S&P entries are **not** backported.
+Plugin-specific logic, UI, and `.claude/CODING_NOTES.md` entries are **not** backported.
 
 ## Rule 4: This Is an External Plugin — Not Part of JobDocs Core
 

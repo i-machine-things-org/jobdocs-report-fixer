@@ -45,7 +45,7 @@ jobdocs-report-fixer/
 │   └── report_tab.ui
 └── .claude/
     ├── CLAUDE.md
-    ├── S&P.md
+    ├── CODING_NOTES.md
     ├── settings.json
     └── hooks/
         └── pre_commit_sp_check.py
@@ -54,13 +54,13 @@ jobdocs-report-fixer/
 ## Development
 
 This plugin is forked from [jobdocs-plugin-template](https://github.com/i-machine-things/jobdocs-plugin-template).
-Changes to shared template files (`.claude/CLAUDE.md`, `.claude/S&P.md` structure,
+Changes to shared template files (`.claude/CLAUDE.md`,
 `settings.json`, `hooks/`, `README.md` structure) must be PR'd back to the template
 repo before or alongside merging here.
 
 See `.claude/CLAUDE.md` for the full branching, commit, and review workflow.
 
-> **Note:** The pre-commit S&P hook (`.claude/hooks/pre_commit_sp_check.py`) is triggered
+> **Note:** The pre-commit coding-notes hook (`.claude/hooks/pre_commit_sp_check.py`) is triggered
 > via Claude Code's `PreToolUse` hook, not by a standard `git commit` hook. It runs when
 > Claude Code executes a `git commit` bash command. Plain `git commit` from a terminal
 > bypasses it by design — the check is Claude-only.
