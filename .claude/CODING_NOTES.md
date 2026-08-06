@@ -21,3 +21,7 @@
 **Guard Classification fill with an explicit empty mask, don't overwrite existing values.** A vectorized fill using only `mapped.notna()` clobbers pre-existing Classification cells. Combine with an `empty_mask` (`isna()` or `== ''`) so only blank cells get filled.
 
 **Avoid `zip(strict=True)` — it requires Python 3.10+.** If `requirements.txt` doesn't pin Python ≥3.10, replace with an explicit length check and `raise ValueError` before zipping.
+
+## Merge Key Normalization (module.py)
+
+**Any column used as a merge/lookup key needs float-suffix stripping, not just the ones that broke first.** Excel/pandas upcasts a numeric column (Job ID, Line, PO) to float64 when any cell is blank, producing `'12345.0'` on `str()`. If the two sides of a join don't upcast identically, the merge silently drops matches. `Line` had this fix; `Job ID` didn't — it's the delivery-schedule merge key for Promise Date, so mismatched rows came back with Promise Date NaN. Strip `\.0$` on every ID-like merge key, symmetrically on both sides of the join.

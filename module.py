@@ -292,6 +292,8 @@ class ReportingModule(BaseModule):
             self.dpas_by_job = {}
             for _, row in df.iterrows():
                 job_id = str(row.iloc[0]).strip()
+                if job_id.endswith('.0'):
+                    job_id = job_id[:-2]
                 if not job_id or job_id == 'nan':
                     continue
                 for cell_val in row:
@@ -304,9 +306,12 @@ class ReportingModule(BaseModule):
 
             self.delivery_df = df[[job_col, promise_col]].copy()
             self.delivery_df.columns = ['_delivery_job_id', 'Promise Date']
-            # Normalize job ID to string for joining
+            # Normalize job ID to string for joining. Strip float suffix (12345.0 -> '12345') —
+            # Excel/pandas upcasts a numeric Job ID column to float64 when any cell is blank,
+            # which would otherwise mismatch against an int-formatted Job ID in the source report.
             self.delivery_df['_delivery_job_id'] = (
                 self.delivery_df['_delivery_job_id'].astype(str).str.strip()
+                .str.replace(r'\.0$', '', regex=True)
             )
             # Convert promise date to date only
             self.delivery_df['Promise Date'] = pd.to_datetime(
@@ -1232,15 +1237,17 @@ class ReportingModule(BaseModule):
 
         # Normalize string-key columns — Excel/pandas reads blank cells as float NaN,
         # which causes TypeError in regex and groupby operations downstream.
-        for _col in ('Customer PO Number', 'Job ID'):
+        if 'Customer PO Number' in df_fixed.columns:
+            _s = df_fixed['Customer PO Number']
+            df_fixed['Customer PO Number'] = _s.where(_s.isna(), _s.astype(str).str.strip())
+        for _col in ('Job ID', 'Line'):
             if _col in df_fixed.columns:
                 _s = df_fixed[_col]
-                df_fixed[_col] = _s.where(_s.isna(), _s.astype(str).str.strip())
-        if 'Line' in df_fixed.columns:
-            _s = df_fixed['Line']
-            # Strip float suffix (1.0 → '1') for consistent composite-key matching
-            _str_vals = _s.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-            df_fixed['Line'] = _s.where(_s.isna(), _str_vals)
+                # Strip float suffix (1.0 → '1') for consistent composite-key matching —
+                # Job ID is also the merge key against the delivery schedule's Job ID column,
+                # so a stray '.0' here breaks the Promise Date lookup for every affected row.
+                _str_vals = _s.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+                df_fixed[_col] = _s.where(_s.isna(), _str_vals)
 
         # Populate Classification from DPAS ratings.
         # Primary source: self.dpas_by_job built from delivery schedule (keyed by Job ID,
