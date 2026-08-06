@@ -270,6 +270,17 @@ class ReportingModule(BaseModule):
 
     def _load_delivery_schedule(self, file_path: str):
         """Load delivery schedule file — column A = Job ID, column F = Promise Date"""
+        suffix = Path(file_path).suffix.lower()
+        if suffix not in ('.xls', '.xlsx'):
+            self.show_error(
+                "Delivery Schedule Error",
+                f"'{Path(file_path).name}' is not an Excel file.\n\n"
+                "The delivery schedule must be the .xlsx or .xls workbook — "
+                "a PDF or printed/exported copy will not work."
+            )
+            self.delivery_df = None
+            self.delivery_info_label.setText("Failed to load file — must be .xlsx or .xls")
+            return
         try:
             df = pd.read_excel(file_path, header=0)
             # Column F is index 5; rename to known names for merging

@@ -219,6 +219,16 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QLabel" name="deliveryHintLabel">
+        <property name="text">
+         <string>Must be the Excel workbook (.xlsx or .xls) — a PDF or printed copy of the schedule will not work.</string>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">color: #888; padding: 2px; font-style: italic;</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
