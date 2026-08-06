@@ -313,6 +313,13 @@ class ReportingModule(BaseModule):
                 self.delivery_df['_delivery_job_id'].astype(str).str.strip()
                 .str.replace(r'\.0$', '', regex=True)
             )
+            # Drop rows with a missing Job ID. A blank cell stringifies to 'nan' on both
+            # sides of the merge, so without this, one delivery row with no Job ID would
+            # match every source row that also has a blank Job ID and assign its Promise
+            # Date to all of them.
+            self.delivery_df = self.delivery_df[
+                ~self.delivery_df['_delivery_job_id'].isin(['', 'nan', 'None'])
+            ].reset_index(drop=True)
             # Convert promise date to date only
             self.delivery_df['Promise Date'] = pd.to_datetime(
                 self.delivery_df['Promise Date'], errors='coerce'
@@ -1236,16 +1243,14 @@ class ReportingModule(BaseModule):
         self._log(f"Result: {len(df_fixed)} rows x {len(df_fixed.columns)} columns")
 
         # Normalize string-key columns — Excel/pandas reads blank cells as float NaN,
-        # which causes TypeError in regex and groupby operations downstream.
-        if 'Customer PO Number' in df_fixed.columns:
-            _s = df_fixed['Customer PO Number']
-            df_fixed['Customer PO Number'] = _s.where(_s.isna(), _s.astype(str).str.strip())
-        for _col in ('Job ID', 'Line'):
+        # which causes TypeError in regex and groupby operations downstream. Also strip
+        # the float suffix (1.0 -> '1') on every one: Job ID is the merge key against the
+        # delivery schedule's Job ID column, and Customer PO Number is the key used by
+        # _track_schedule_changes to build history keys — a stray '.0' on either breaks
+        # matching (Promise Date lookups / schedule-change detection across runs).
+        for _col in ('Customer PO Number', 'Job ID', 'Line'):
             if _col in df_fixed.columns:
                 _s = df_fixed[_col]
-                # Strip float suffix (1.0 → '1') for consistent composite-key matching —
-                # Job ID is also the merge key against the delivery schedule's Job ID column,
-                # so a stray '.0' here breaks the Promise Date lookup for every affected row.
                 _str_vals = _s.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
                 df_fixed[_col] = _s.where(_s.isna(), _str_vals)
 
