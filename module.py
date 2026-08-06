@@ -231,6 +231,15 @@ class ReportingModule(BaseModule):
 
     def _load_template(self, file_path: str):
         """Load template file and extract column names"""
+        if Path(file_path).suffix.lower() not in ('.xls', '.xlsx'):
+            self.show_error(
+                "Template Error",
+                f"'{Path(file_path).name}' is not an Excel file.\n\n"
+                "The template must be the .xlsx or .xls workbook — "
+                "a PDF or printed/exported copy will not work."
+            )
+            self.template_columns = None
+            return
         try:
             df_template = pd.read_excel(file_path, nrows=0)
             self.template_columns = list(df_template.columns)
@@ -242,6 +251,16 @@ class ReportingModule(BaseModule):
 
     def _load_source(self, file_path: str):
         """Load source Excel file"""
+        if Path(file_path).suffix.lower() not in ('.xls', '.xlsx'):
+            self.show_error(
+                "Source Error",
+                f"'{Path(file_path).name}' is not an Excel file.\n\n"
+                "The source report must be the .xlsx or .xls workbook — "
+                "a PDF or printed/exported copy will not work."
+            )
+            self.source_df = None
+            self.source_info_label.setText("Failed to load file — must be .xlsx or .xls")
+            return
         try:
             self.source_df = pd.read_excel(file_path)
             self.source_path_edit.setText(file_path)
