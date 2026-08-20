@@ -10,6 +10,7 @@ import re
 import sys
 import json
 import traceback
+from copy import copy
 from pathlib import Path
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -741,6 +742,39 @@ class ReportingModule(BaseModule):
         else:
             self._export_single_customer(cf_dir, selected)
 
+    @staticmethod
+    def _normalize_key_value(val) -> str:
+        """Normalize a cell value for job-key matching (handles int/float/string differences)"""
+        if pd.isna(val):
+            return ''
+        s = str(val).strip()
+        if s.endswith('.0'):
+            s = s[:-2]
+        return s
+
+    @staticmethod
+    def _determine_key_columns(columns_a, columns_b):
+        """Pick the column(s) used to match a job across two column sets.
+
+        Prefers 'Job ID' alone; falls back to Customer PO Number (+ Line if present).
+        Returns (key_cols, use_composite_key), or (None, False) if no match is possible.
+        """
+        if 'Job ID' in columns_a and 'Job ID' in columns_b:
+            return ['Job ID'], False
+        if 'Customer PO Number' in columns_a and 'Customer PO Number' in columns_b:
+            if 'Line' in columns_a and 'Line' in columns_b:
+                return ['Customer PO Number', 'Line'], True
+            return ['Customer PO Number'], False
+        return None, False
+
+    def _make_job_key(self, values, key_cols, use_composite_key) -> str:
+        """Build a job key from a mapping of column name -> value (a pandas row or dict)."""
+        if use_composite_key:
+            po = self._normalize_key_value(values.get('Customer PO Number'))
+            line = self._normalize_key_value(values.get('Line'))
+            return f"{po}|{line}"
+        return self._normalize_key_value(values.get(key_cols[0]))
+
     def _find_last_report(self, reports_dir: Path, customer: str) -> Path:
         """Find the report file for a customer (single file, no date suffix)"""
         # Check for the standard report file (no date suffix)
@@ -759,80 +793,75 @@ class ReportingModule(BaseModule):
 
     def _get_completed_jobs(self, df_fixed: 'pd.DataFrame', reports_dir: Path, customer: str) -> tuple:
         """Compare with last report to:
-        1. Preserve notes from previous report for jobs still active
+        1. Carry forward any manually-entered value into matching jobs (fresh blanks only)
         2. Mark missing jobs as complete
         3. Carry forward previously completed jobs
-        4. Preserve highlighting from previous report
+        4. Preserve highlighting (any color, any column) from the previous report
 
-        Returns: (df_fixed, highlighted_rows) - highlighted_rows contains row indices that should be yellow
+        Nothing here removes or overwrites something a person added by hand - it only
+        fills in blanks with prior manual entries, or lets freshly computed data stand
+        where the old report had nothing.
+
+        Returns: (df_fixed, previous_fills, key_cols, use_composite_key)
+            previous_fills maps job_key -> {column_name: openpyxl Fill} for every
+            highlighted cell found in the previous report.
         """
         last_report = self._find_last_report(reports_dir, customer)
         if not last_report:
             self._log("No previous report found - skipping completion check")
-            return df_fixed, set()
+            return df_fixed, {}, None, False
 
         try:
             df_previous = pd.read_excel(last_report)
             self._log(f"Comparing with previous report: {last_report.name}")
         except Exception as e:
             self._log(f"Could not read previous report: {e}")
-            return df_fixed, set()
+            return df_fixed, {}, None, False
 
-        # Read highlighting from previous report
-        previous_highlighted_keys = set()
+        key_cols, use_composite_key = self._determine_key_columns(df_fixed.columns, df_previous.columns)
+        if key_cols is None:
+            self._log("Cannot identify job key column - skipping completion check")
+            return df_fixed, {}, None, False
+
+        def make_key(values):
+            return self._make_job_key(values, key_cols, use_composite_key)
+
+        # Read every highlighted cell (any color, any column) from the previous report,
+        # keyed by job so it can be reapplied after this run regenerates the sheet.
+        previous_fills = {}
         wb_prev = None
         try:
             wb_prev = load_workbook(last_report)
             ws_prev = wb_prev.active
 
-            # Find column indices first (outside the row loop)
-            sched_col_prev = None
-            po_col_prev = None
-            line_col_prev = None
+            header_cols = {}
             for col_idx, cell in enumerate(ws_prev[1], 1):
-                if cell.value == 'Scheduled End Date':
-                    sched_col_prev = col_idx
-                elif cell.value == 'Customer PO Number':
-                    po_col_prev = col_idx
-                elif cell.value == 'Line':
-                    line_col_prev = col_idx
+                if cell.value:
+                    header_cols[col_idx] = str(cell.value)
 
-            if sched_col_prev and po_col_prev and line_col_prev:
-                # Check each data row for yellow highlighting
+            if all(col in header_cols.values() for col in key_cols):
                 for row_idx in range(2, ws_prev.max_row + 1):
-                    cell = ws_prev.cell(row=row_idx, column=sched_col_prev)
+                    row_values = {name: ws_prev.cell(row=row_idx, column=idx).value
+                                  for idx, name in header_cols.items()}
+                    row_key = make_key(row_values)
+                    if (row_key == '|') if use_composite_key else (not row_key):
+                        continue
 
-                    # Check for yellow fill - handle multiple ways openpyxl stores colors
-                    is_yellow = False
-                    if cell.fill and cell.fill.fill_type == 'solid':
-                        fg_color = cell.fill.fgColor
-                        if fg_color:
-                            # Check RGB value (could be stored as rgb attribute or as index)
-                            if fg_color.rgb:
-                                rgb = str(fg_color.rgb).upper()
-                                # Yellow is FFFF00, sometimes stored as 00FFFF00 (with alpha)
-                                if 'FFFF00' in rgb:
-                                    is_yellow = True
-                            elif fg_color.theme is None and fg_color.indexed:
-                                # Indexed color 13 is often yellow
-                                if fg_color.indexed == 13:
-                                    is_yellow = True
+                    for col_idx, col_name in header_cols.items():
+                        cell = ws_prev.cell(row=row_idx, column=col_idx)
+                        fill = cell.fill
+                        if fill and fill.fill_type == 'solid' and fill.fgColor and (
+                            fill.fgColor.rgb or fill.fgColor.indexed is not None
+                        ):
+                            # cell.fill is a StyleProxy tied to the source workbook's
+                            # stylesheet - copy it to a plain PatternFill so it can be
+                            # reassigned to a cell in the newly generated workbook.
+                            previous_fills.setdefault(row_key, {})[col_name] = copy(fill)
 
-                    if is_yellow:
-                        po_val = ws_prev.cell(row=row_idx, column=po_col_prev).value
-                        line_val = ws_prev.cell(row=row_idx, column=line_col_prev).value
-                        if po_val is not None and line_val is not None:
-                            # Normalize values
-                            po_str = str(po_val).strip()
-                            line_str = str(line_val).strip()
-                            if po_str.endswith('.0'):
-                                po_str = po_str[:-2]
-                            if line_str.endswith('.0'):
-                                line_str = line_str[:-2]
-                            previous_highlighted_keys.add(f"{po_str}|{line_str}")
-
-            if previous_highlighted_keys:
-                self._log(f"Found {len(previous_highlighted_keys)} highlighted cells in previous report")
+            fill_cell_count = sum(len(cols) for cols in previous_fills.values())
+            if fill_cell_count:
+                self._log(f"Found {fill_cell_count} highlighted cell(s) across "
+                          f"{len(previous_fills)} row(s) in previous report")
             else:
                 self._log("No highlighted cells found in previous report")
         except Exception as e:
@@ -840,40 +869,6 @@ class ReportingModule(BaseModule):
         finally:
             if wb_prev is not None:
                 wb_prev.close()
-
-        # Determine key columns for job identification
-        use_composite_key = False
-        if 'Job ID' in df_fixed.columns and 'Job ID' in df_previous.columns:
-            key_cols = ['Job ID']
-        elif 'Customer PO Number' in df_fixed.columns and 'Customer PO Number' in df_previous.columns:
-            if 'Line' in df_fixed.columns and 'Line' in df_previous.columns:
-                key_cols = ['Customer PO Number', 'Line']
-                use_composite_key = True
-            else:
-                key_cols = ['Customer PO Number']
-        else:
-            self._log("Cannot identify job key column - skipping completion check")
-            return df_fixed, set()
-
-        # Create job key function - normalize values to handle int/float/string differences
-        def normalize_value(val):
-            """Normalize a value to string, handling int/float conversion"""
-            if pd.isna(val):
-                return ''
-            # Convert to string
-            s = str(val).strip()
-            # Remove .0 suffix from floats that are actually integers
-            if s.endswith('.0'):
-                s = s[:-2]
-            return s
-
-        def make_key(row):
-            if use_composite_key:
-                po = normalize_value(row['Customer PO Number'])
-                line = normalize_value(row['Line'])
-                return f"{po}|{line}"
-            else:
-                return normalize_value(row[key_cols[0]])
 
         # Build map of current jobs (key -> row index in df_fixed)
         current_job_map = {}
@@ -888,9 +883,10 @@ class ReportingModule(BaseModule):
         current_jobs = set(current_job_map.keys())
         self._log(f"Current report has {len(current_jobs)} unique jobs")
 
-        # Build map of previous jobs (key -> row data)
+        # Build map of previous jobs, capturing every column's value so anything typed
+        # by hand survives even where the freshly transformed cell is blank.
         previous_job_map = {}  # key -> row index
-        previous_notes = {}  # key -> notes value
+        previous_row_values = {}  # key -> {column: value}
         previous_completed = set()  # keys that were marked Complete
         previous_active = set()  # keys that were NOT marked Complete
 
@@ -899,11 +895,10 @@ class ReportingModule(BaseModule):
                 key = make_key(row)
                 if key and key not in ('nan|nan', 'nan', ''):
                     previous_job_map[key] = idx
-                    # Store notes from previous report
-                    if 'Notes' in df_previous.columns:
-                        notes_val = row.get('Notes', '')
-                        if pd.notna(notes_val) and str(notes_val).strip():
-                            previous_notes[key] = str(notes_val).strip()
+                    previous_row_values[key] = {
+                        col: row[col] for col in df_previous.columns
+                        if pd.notna(row[col]) and str(row[col]).strip()
+                    }
                     status = str(row.get('Status', '')).lower()
                     if 'complete' in status:
                         previous_completed.add(key)
@@ -914,19 +909,23 @@ class ReportingModule(BaseModule):
 
         self._log(f"Previous report: {len(previous_active)} active, {len(previous_completed)} completed")
 
-        # STEP 1: Merge notes from previous report into current data for matching jobs
-        if 'Notes' in df_fixed.columns and previous_notes:
-            notes_merged = 0
-            for key, prev_notes in previous_notes.items():
-                if key in current_job_map:
-                    idx = current_job_map[key]
-                    current_notes = df_fixed.at[idx, 'Notes']
-                    # Only copy if current notes are empty and previous has content
-                    if pd.isna(current_notes) or str(current_notes).strip() == '':
-                        df_fixed.at[idx, 'Notes'] = prev_notes
-                        notes_merged += 1
-            if notes_merged > 0:
-                self._log(f"Merged {notes_merged} notes from previous report")
+        # STEP 1: Carry forward manually-entered values into matching current rows -
+        # only into cells the fresh transform left blank, never over a fresh value.
+        if previous_row_values:
+            values_merged = 0
+            for key, prev_values in previous_row_values.items():
+                if key not in current_job_map:
+                    continue
+                idx = current_job_map[key]
+                for col, prev_val in prev_values.items():
+                    if col not in df_fixed.columns or col in key_cols:
+                        continue
+                    current_val = df_fixed.at[idx, col]
+                    if pd.isna(current_val) or str(current_val).strip() == '':
+                        df_fixed.at[idx, col] = prev_val
+                        values_merged += 1
+            if values_merged > 0:
+                self._log(f"Carried forward {values_merged} manually-entered value(s) from previous report")
 
         # STEP 2: Find jobs to add (completed)
         # Previously active jobs that are now missing = newly completed
@@ -939,7 +938,7 @@ class ReportingModule(BaseModule):
 
         if not newly_completed and not carry_forward:
             self._log("No completed jobs to add")
-            return df_fixed, previous_highlighted_keys
+            return df_fixed, previous_fills, key_cols, use_composite_key
 
         rows_to_add = []
         original_columns = list(df_fixed.columns)
@@ -987,9 +986,9 @@ class ReportingModule(BaseModule):
             df_combined = pd.concat([df_fixed, completed_rows], ignore_index=True)
 
             self._log(f"Added {len(completed_rows)} completed jobs to report")
-            return df_combined, previous_highlighted_keys
+            return df_combined, previous_fills, key_cols, use_composite_key
 
-        return df_fixed, previous_highlighted_keys
+        return df_fixed, previous_fills, key_cols, use_composite_key
 
     def _export_single_customer(self, cf_dir: str, customer: str):
         """Export report for a single selected customer"""
@@ -1018,10 +1017,11 @@ class ReportingModule(BaseModule):
             changed_rows = self._track_schedule_changes(df_fixed)
 
             # Check for completed jobs from previous report (also returns preserved highlights)
-            df_fixed, prev_highlighted_keys = self._get_completed_jobs(df_fixed, reports_dir, customer)
+            df_fixed, prev_fills, key_cols, use_composite_key = self._get_completed_jobs(
+                df_fixed, reports_dir, customer)
 
             # Save with formatting (merge new changes with preserved highlights)
-            self._save_formatted_excel(df_fixed, output_file, changed_rows, prev_highlighted_keys)
+            self._save_formatted_excel(df_fixed, output_file, changed_rows, prev_fills, key_cols, use_composite_key)
 
             self.last_output_path = output_file
             self.open_output_btn.setEnabled(True)
@@ -1139,10 +1139,12 @@ class ReportingModule(BaseModule):
                 changed_rows = self._track_schedule_changes(df_fixed)
 
                 # Check for completed jobs from previous report (also returns preserved highlights)
-                df_fixed, prev_highlighted_keys = self._get_completed_jobs(df_fixed, reports_dir, folder_name)
+                df_fixed, prev_fills, key_cols, use_composite_key = self._get_completed_jobs(
+                    df_fixed, reports_dir, folder_name)
 
                 # Save with formatting (merge new changes with preserved highlights)
-                self._save_formatted_excel(df_fixed, output_file, changed_rows, prev_highlighted_keys)
+                self._save_formatted_excel(
+                    df_fixed, output_file, changed_rows, prev_fills, key_cols, use_composite_key)
 
                 success_count += 1
                 total_changes += len(changed_rows)
@@ -1397,14 +1399,18 @@ class ReportingModule(BaseModule):
 
         return changed_rows
 
-    def _save_formatted_excel(self, df_fixed, output_file, changed_rows, prev_highlighted_keys=None):
+    def _save_formatted_excel(self, df_fixed, output_file, changed_rows, previous_fills=None,
+                               key_cols=None, use_composite_key=False):
         """Save DataFrame with Excel formatting
 
         Args:
             df_fixed: DataFrame to save
             output_file: Path to save to
             changed_rows: List of row indices with NEW schedule changes (from this run)
-            prev_highlighted_keys: Set of job keys (PO|Line) that were highlighted in previous report
+            previous_fills: {job_key: {column_name: openpyxl Fill}} highlighting captured
+                from the previous report (any color, any column) to reapply here
+            key_cols: Column(s) that make up job_key, matching what produced previous_fills
+            use_composite_key: True if job_key is 'PO|Line', False if it's a single column
         """
         # Save initial Excel
         df_fixed.to_excel(output_file, index=False, engine='openpyxl')
@@ -1419,20 +1425,15 @@ class ReportingModule(BaseModule):
         yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
         red_fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
 
-        # Find column indices we need
-        sched_col = None
-        promise_col = None
-        po_col = None
-        line_col = None
+        # Map every column name to its position, so preserved highlighting can be
+        # reapplied to whichever column it was on, not just Scheduled End Date.
+        col_idx_by_name = {}
         for col_idx, cell in enumerate(ws[1], 1):
-            if cell.value == 'Scheduled End Date':
-                sched_col = col_idx
-            elif cell.value == 'Promise Date':
-                promise_col = col_idx
-            elif cell.value == 'Customer PO Number':
-                po_col = col_idx
-            elif cell.value == 'Line':
-                line_col = col_idx
+            if cell.value:
+                col_idx_by_name[str(cell.value)] = col_idx
+
+        sched_col = col_idx_by_name.get('Scheduled End Date')
+        promise_col = col_idx_by_name.get('Promise Date')
 
         highlighted_count = 0
 
@@ -1443,31 +1444,36 @@ class ReportingModule(BaseModule):
                 ws.cell(row=excel_row, column=sched_col).fill = yellow_fill
                 highlighted_count += 1
 
-        # Apply highlighting for PRESERVED rows (from previous report)
-        if prev_highlighted_keys and sched_col and po_col and line_col:
-            # Normalize function for consistent key matching
-            def normalize_value(val):
-                if val is None:
-                    return ''
-                s = str(val).strip()
-                if s.endswith('.0'):
-                    s = s[:-2]
-                return s
-
-            # Check each data row to see if it should be highlighted
+        # Reapply PRESERVED highlighting from the previous report - any color, any
+        # column. A cell this run already highlighted for a schedule change is left
+        # alone; every other previously-highlighted cell stays highlighted until a
+        # person clears it by hand - this tool never removes a highlight on its own.
+        if previous_fills and key_cols and all(col_idx_by_name.get(c) for c in key_cols):
             for excel_row in range(2, ws.max_row + 1):
-                po_val = ws.cell(row=excel_row, column=po_col).value
-                line_val = ws.cell(row=excel_row, column=line_col).value
+                if use_composite_key:
+                    po_val = ws.cell(row=excel_row, column=col_idx_by_name['Customer PO Number']).value
+                    line_val = ws.cell(row=excel_row, column=col_idx_by_name['Line']).value
+                    key = f"{self._normalize_key_value(po_val)}|{self._normalize_key_value(line_val)}"
+                    if key == '|':
+                        continue
+                else:
+                    key = self._normalize_key_value(ws.cell(row=excel_row, column=col_idx_by_name[key_cols[0]]).value)
+                    if not key:
+                        continue
 
-                if po_val is not None and line_val is not None:
-                    key = f"{normalize_value(po_val)}|{normalize_value(line_val)}"
-                    if key in prev_highlighted_keys:
-                        # Check if this row isn't already highlighted from new changes
-                        # (changed_rows are 0-indexed, excel_row is 1-indexed+header)
-                        row_idx = excel_row - 2
-                        if row_idx not in changed_rows:
-                            ws.cell(row=excel_row, column=sched_col).fill = yellow_fill
-                            highlighted_count += 1
+                row_fills = previous_fills.get(key)
+                if not row_fills:
+                    continue
+
+                row_idx0 = excel_row - 2  # changed_rows are 0-indexed, excel_row is 1-indexed+header
+                for col_name, fill in row_fills.items():
+                    col_idx = col_idx_by_name.get(col_name)
+                    if not col_idx:
+                        continue
+                    if col_idx == sched_col and row_idx0 in changed_rows:
+                        continue  # this run's own change-tracking highlight wins
+                    ws.cell(row=excel_row, column=col_idx).fill = fill
+                    highlighted_count += 1
 
         if highlighted_count > 0:
             self._log(f"Highlighted {highlighted_count} cells (new changes + preserved)")

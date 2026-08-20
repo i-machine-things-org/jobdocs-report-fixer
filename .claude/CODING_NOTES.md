@@ -21,3 +21,9 @@
 **Guard Classification fill with an explicit empty mask, don't overwrite existing values.** A vectorized fill using only `mapped.notna()` clobbers pre-existing Classification cells. Combine with an `empty_mask` (`isna()` or `== ''`) so only blank cells get filled.
 
 **Avoid `zip(strict=True)` — it requires Python 3.10+.** If `requirements.txt` doesn't pin Python ≥3.10, replace with an explicit length check and `raise ValueError` before zipping.
+
+## Report Regeneration — Preserving Manual Edits (module.py)
+
+**Every report regeneration must be additive-only toward the previous file — never delete a manual edit or highlight.** `_get_completed_jobs`/`_save_formatted_excel` carry forward *any* highlighted cell (any color, any column, not just yellow on Scheduled End Date) and *any* manually-typed value into a cell the fresh transform left blank. A cell only changes when this run has a legitimate new computed value (fresh source data, or the tool's own schedule-change/late-date coloring) for it — it is never silently blanked or un-highlighted.
+
+**`cell.fill` from an openpyxl workbook is a `StyleProxy`, not a plain `PatternFill`.** Reassigning it directly to a cell in another (or the freshly re-saved) workbook raises `TypeError: unhashable StyleProxy`. Always `copy(cell.fill)` (from `copy import copy`) before storing/reapplying it.
