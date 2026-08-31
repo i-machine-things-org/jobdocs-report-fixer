@@ -22,12 +22,8 @@
 
 **Avoid `zip(strict=True)` — it requires Python 3.10+.** If `requirements.txt` doesn't pin Python ≥3.10, replace with an explicit length check and `raise ValueError` before zipping.
 
-## Merge Key Normalization (module.py)
+## Report Regeneration — Preserving Manual Edits (module.py)
 
-**Any column used as a merge/lookup key needs float-suffix stripping, not just the ones that broke first.** Excel/pandas upcasts a numeric column (Job ID, Line, PO) to float64 when any cell is blank, producing `'12345.0'` on `str()`. If the two sides of a join don't upcast identically, the merge silently drops matches. `Line` had this fix; `Job ID` and `Customer PO Number` didn't — `Job ID` is the delivery-schedule merge key for Promise Date, so mismatched rows came back with Promise Date NaN, and `Customer PO Number` feeds `_track_schedule_changes` history keys. Strip `\.0$` on every ID-like merge key, symmetrically on both sides of the join.
+**Every report regeneration must be additive-only toward the previous file — never delete a manual edit or highlight.** `_get_completed_jobs`/`_save_formatted_excel` carry forward *any* highlighted cell (any color, any column, not just yellow on Scheduled End Date) and *any* manually-typed value into a cell the fresh transform left blank. A cell only changes when this run has a legitimate new computed value (fresh source data, or the tool's own schedule-change/late-date coloring) for it — it is never silently blanked or un-highlighted.
 
-**Drop rows with a blank merge key before joining — don't let `'nan'` match `'nan'`.** `astype(str)` turns a missing/NaN key into the literal string `'nan'` on both sides of a merge, so a delivery-schedule row with no Job ID would match every source row that also has a blank Job ID and hand its Promise Date to all of them. Filter out `''`/`'nan'`/`'None'` keys from the lookup table before merging, not just from dict-building loops.
-
-## File Input Validation (module.py)
-
-**Validate file extension before handing a path to `pd.read_excel`, don't rely on the file-dialog filter alone.** `QFileDialog` always offers an "All Files" option, so a user can pick a PDF/wrong file despite an "Excel Files" filter. `pd.read_excel` then fails with a cryptic low-level error instead of a clear one. Check `Path(file_path).suffix.lower() in ('.xls', '.xlsx')` up front and show a specific error naming the file and the required type.
+**`cell.fill` from an openpyxl workbook is a `StyleProxy`, not a plain `PatternFill`.** Reassigning it directly to a cell in another (or the freshly re-saved) workbook raises `TypeError: unhashable StyleProxy`. Always `copy(cell.fill)` (from `copy import copy`) before storing/reapplying it.
