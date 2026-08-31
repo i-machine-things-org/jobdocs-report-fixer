@@ -8,6 +8,7 @@ An external JobDocs plugin that transforms Excel job reports to match a template
 - Map source columns to a template layout automatically
 - Preview customer mappings and resolve unmatched customers via alias persistence
 - Export a fixed, formatted `.xlsx` with highlighted changes and date-change notes
+- Regenerating a report never erases manual work: any cell highlighting (any color, any column) and any value typed by hand into a blank cell on the last report carry forward automatically
 
 ## Requirements
 
