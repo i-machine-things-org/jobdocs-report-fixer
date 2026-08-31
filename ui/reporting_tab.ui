@@ -37,7 +37,7 @@
      <property name="title">
       <string>Template Configuration</string>
      </property>
-     <layout class="QHBoxLayout" name="templateLayout">
+     <layout class="QVBoxLayout" name="templateLayout">
       <property name="spacing">
        <number>5</number>
       </property>
@@ -54,32 +54,46 @@
        <number>5</number>
       </property>
       <item>
-       <widget class="QLabel" name="templateLabel">
-        <property name="text">
-         <string>Template File:</string>
-        </property>
-       </widget>
+       <layout class="QHBoxLayout" name="templateFileLayout">
+        <item>
+         <widget class="QLabel" name="templateLabel">
+          <property name="text">
+           <string>Template File:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="template_path_edit">
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+          <property name="placeholderText">
+           <string>Select template Excel file...</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="browse_template_btn">
+          <property name="text">
+           <string>Browse...</string>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>80</width>
+            <height>16777215</height>
+           </size>
+          </property>
+         </widget>
+        </item>
+       </layout>
       </item>
       <item>
-       <widget class="QLineEdit" name="template_path_edit">
-        <property name="readOnly">
-         <bool>true</bool>
-        </property>
-        <property name="placeholderText">
-         <string>Select template Excel file...</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="browse_template_btn">
+       <widget class="QLabel" name="templateHintLabel">
         <property name="text">
-         <string>Browse...</string>
+         <string>Must be the Excel workbook (.xlsx or .xls) — a PDF or printed copy will not work.</string>
         </property>
-        <property name="maximumSize">
-         <size>
-          <width>80</width>
-          <height>16777215</height>
-         </size>
+        <property name="styleSheet">
+         <string notr="true">color: #888; padding: 2px; font-style: italic;</string>
         </property>
        </widget>
       </item>
@@ -151,6 +165,16 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QLabel" name="sourceHintLabel">
+        <property name="text">
+         <string>Must be the Excel workbook (.xlsx or .xls) — a PDF or printed copy will not work.</string>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">color: #888; padding: 2px; font-style: italic;</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
@@ -216,6 +240,16 @@
         </property>
         <property name="styleSheet">
          <string notr="true">color: #666; padding: 2px;</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="deliveryHintLabel">
+        <property name="text">
+         <string>Must be the Excel workbook (.xlsx or .xls) — a PDF or printed copy of the schedule will not work.</string>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">color: #888; padding: 2px; font-style: italic;</string>
         </property>
        </widget>
       </item>

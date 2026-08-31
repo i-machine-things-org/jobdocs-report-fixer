@@ -232,6 +232,15 @@ class ReportingModule(BaseModule):
 
     def _load_template(self, file_path: str):
         """Load template file and extract column names"""
+        if Path(file_path).suffix.lower() not in ('.xls', '.xlsx'):
+            self.show_error(
+                "Template Error",
+                f"'{Path(file_path).name}' is not an Excel file.\n\n"
+                "The template must be the .xlsx or .xls workbook — "
+                "a PDF or printed/exported copy will not work."
+            )
+            self.template_columns = None
+            return
         try:
             df_template = pd.read_excel(file_path, nrows=0)
             self.template_columns = list(df_template.columns)
@@ -243,6 +252,16 @@ class ReportingModule(BaseModule):
 
     def _load_source(self, file_path: str):
         """Load source Excel file"""
+        if Path(file_path).suffix.lower() not in ('.xls', '.xlsx'):
+            self.show_error(
+                "Source Error",
+                f"'{Path(file_path).name}' is not an Excel file.\n\n"
+                "The source report must be the .xlsx or .xls workbook — "
+                "a PDF or printed/exported copy will not work."
+            )
+            self.source_df = None
+            self.source_info_label.setText("Failed to load file — must be .xlsx or .xls")
+            return
         try:
             self.source_df = pd.read_excel(file_path)
             self.source_path_edit.setText(file_path)
@@ -271,6 +290,17 @@ class ReportingModule(BaseModule):
 
     def _load_delivery_schedule(self, file_path: str):
         """Load delivery schedule file — column A = Job ID, column F = Promise Date"""
+        suffix = Path(file_path).suffix.lower()
+        if suffix not in ('.xls', '.xlsx'):
+            self.show_error(
+                "Delivery Schedule Error",
+                f"'{Path(file_path).name}' is not an Excel file.\n\n"
+                "The delivery schedule must be the .xlsx or .xls workbook — "
+                "a PDF or printed/exported copy will not work."
+            )
+            self.delivery_df = None
+            self.delivery_info_label.setText("Failed to load file — must be .xlsx or .xls")
+            return
         try:
             df = pd.read_excel(file_path, header=0)
             # Column F is index 5; rename to known names for merging
@@ -293,6 +323,8 @@ class ReportingModule(BaseModule):
             self.dpas_by_job = {}
             for _, row in df.iterrows():
                 job_id = str(row.iloc[0]).strip()
+                if job_id.endswith('.0'):
+                    job_id = job_id[:-2]
                 if not job_id or job_id == 'nan':
                     continue
                 for cell_val in row:
@@ -305,10 +337,20 @@ class ReportingModule(BaseModule):
 
             self.delivery_df = df[[job_col, promise_col]].copy()
             self.delivery_df.columns = ['_delivery_job_id', 'Promise Date']
-            # Normalize job ID to string for joining
+            # Normalize job ID to string for joining. Strip float suffix (12345.0 -> '12345') —
+            # Excel/pandas upcasts a numeric Job ID column to float64 when any cell is blank,
+            # which would otherwise mismatch against an int-formatted Job ID in the source report.
             self.delivery_df['_delivery_job_id'] = (
                 self.delivery_df['_delivery_job_id'].astype(str).str.strip()
+                .str.replace(r'\.0$', '', regex=True)
             )
+            # Drop rows with a missing Job ID. A blank cell stringifies to 'nan' on both
+            # sides of the merge, so without this, one delivery row with no Job ID would
+            # match every source row that also has a blank Job ID and assign its Promise
+            # Date to all of them.
+            self.delivery_df = self.delivery_df[
+                ~self.delivery_df['_delivery_job_id'].isin(['', 'nan', 'None'])
+            ].reset_index(drop=True)
             # Convert promise date to date only
             self.delivery_df['Promise Date'] = pd.to_datetime(
                 self.delivery_df['Promise Date'], errors='coerce'
@@ -1233,16 +1275,16 @@ class ReportingModule(BaseModule):
         self._log(f"Result: {len(df_fixed)} rows x {len(df_fixed.columns)} columns")
 
         # Normalize string-key columns — Excel/pandas reads blank cells as float NaN,
-        # which causes TypeError in regex and groupby operations downstream.
-        for _col in ('Customer PO Number', 'Job ID'):
+        # which causes TypeError in regex and groupby operations downstream. Also strip
+        # the float suffix (1.0 -> '1') on every one: Job ID is the merge key against the
+        # delivery schedule's Job ID column, and Customer PO Number is the key used by
+        # _track_schedule_changes to build history keys — a stray '.0' on either breaks
+        # matching (Promise Date lookups / schedule-change detection across runs).
+        for _col in ('Customer PO Number', 'Job ID', 'Line'):
             if _col in df_fixed.columns:
                 _s = df_fixed[_col]
-                df_fixed[_col] = _s.where(_s.isna(), _s.astype(str).str.strip())
-        if 'Line' in df_fixed.columns:
-            _s = df_fixed['Line']
-            # Strip float suffix (1.0 → '1') for consistent composite-key matching
-            _str_vals = _s.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-            df_fixed['Line'] = _s.where(_s.isna(), _str_vals)
+                _str_vals = _s.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+                df_fixed[_col] = _s.where(_s.isna(), _str_vals)
 
         # Populate Classification from DPAS ratings.
         # Primary source: self.dpas_by_job built from delivery schedule (keyed by Job ID,
