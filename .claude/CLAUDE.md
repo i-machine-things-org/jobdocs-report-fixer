@@ -96,18 +96,20 @@ Tag releases using `vMAJOR.MINOR.PATCH` from `master` only.
 After every merge to `master`, count commits since the last `v*` tag:
 
 ```bash
-last_tag=$(git describe --tags --abbrev=0 2>/dev/null)
-if [ -n "$last_tag" ]; then
-  git log "$last_tag"..master --oneline
-else
-  git log master --oneline
-fi
+last_tag="$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || git rev-list --max-parents=0 master)"
+git log "$last_tag"..master --oneline
 ```
 
-- **5 or more `feat:` commits** → bump MINOR
-- **5 or more `fix:` commits** → bump PATCH
+**Thresholds:**
+- **5 or more `feat:` commits** → recommend a MINOR bump
+- **5 or more `fix:` commits** → recommend a PATCH bump
 
-Check after every merge. Do not wait for the user to ask.
+If both thresholds are met simultaneously, recommend MINOR (takes precedence). This is a
+*recommendation*, not an action — get explicit human approval before creating any tag; this
+threshold does not authorize tagging or pushing automatically here.
+
+Check this threshold after every merge to master and report the recommendation. Do not wait for
+the user to ask before reporting it — but do wait for their sign-off before acting on it.
 
 ## Rule 6: Pull Request Reviews
 
