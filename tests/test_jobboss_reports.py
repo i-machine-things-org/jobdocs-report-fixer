@@ -294,11 +294,10 @@ class TestEmployeeEfficiencyStrip:
 
 
 class TestHiddenColumns:
-    """Column A (the "Employee:"/"Employee Total:" label plumbing) and the
-    appended Employee Key column (see TestEmployeeKeyColumn) are hidden, not
-    deleted -- same treatment as the hidden detail rows. The raw export's
-    unlabeled trailing columns (H-O) are left visible; hiding them too
-    wasn't worth the upkeep for columns nobody reads anyway.
+    """Column A (the "Employee:"/"Employee Total:" label plumbing), the raw
+    export's unlabeled trailing columns (H-O), and the appended Employee Key
+    column (see TestEmployeeKeyColumn) are all hidden, not deleted -- same
+    treatment as the hidden detail rows.
     """
 
     def test_expected_columns_are_hidden(self, tmp_path):
@@ -309,7 +308,11 @@ class TestHiddenColumns:
         wb = openpyxl.load_workbook(out)
         ws = wb.active
         hidden = {c for c, dim in ws.column_dimensions.items() if dim.hidden}
-        assert hidden == {'A', 'P'}  # P = the appended Employee Key column
+        # H through O is one contiguous hidden block -- visually reads as
+        # "the sheet ends after G", but every column and its data is still
+        # there, just collapsed, not deleted. P = the appended Employee Key
+        # column.
+        assert hidden == {'A', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'}
         wb.close()
 
     def test_other_columns_are_not_hidden(self, tmp_path):
@@ -319,7 +322,7 @@ class TestHiddenColumns:
 
         wb = openpyxl.load_workbook(out)
         ws = wb.active
-        for letter in ('B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'):
+        for letter in ('B', 'C', 'D', 'E', 'F', 'G'):
             dim = ws.column_dimensions.get(letter)
             assert dim is None or not dim.hidden, f"column {letter} should not be hidden"
         wb.close()
