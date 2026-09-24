@@ -50,11 +50,12 @@ An external JobDocs plugin providing the **Report Fixer** tab, with two independ
 ### JobBOSS Custom Reports
 
 1. **Report Type** — Select the report type (auto-selected once a matching raw file is chosen).
-2. **Raw Report File** — Browse to the raw JobBOSS export (`.xls` / `.xlsx`).
-3. **Output File** — Auto-filled as `<name>.stripped.xlsx` next to the source; change if needed.
-4. **Strip Report** — Hides every row except the summary lines (job/work-center detail rows are
-   preserved on the sheet, just hidden behind the table filter) and saves the result.
-5. **Open Output Folder** — Jump straight to the saved file.
+2. **Raw Report File** — Drag and drop the raw JobBOSS export onto the tab, or click Browse
+   (`.xls` / `.xlsx`).
+3. **Strip Report...** — Prompts with a Save As dialog (defaulting to `<name>.stripped.xlsx` next
+   to the source), then hides every row except the summary lines (job/work-center detail rows are
+   preserved on the sheet, just hidden behind the table filter) and saves the result there.
+4. **Open Output Folder** — Jump straight to the saved file.
 
 ## Plugin Structure
 

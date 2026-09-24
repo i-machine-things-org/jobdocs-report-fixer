@@ -87,7 +87,6 @@ class ReportingModule(BaseModule):
         # JobBOSS Custom Reports tab (widget references)
         self.jb_report_type_combo = None
         self.jb_source_path_edit = None
-        self.jb_output_path_edit = None
         self.jb_strip_btn = None
         self.jb_open_output_btn = None
         self.jb_status_label = None
@@ -1630,10 +1629,12 @@ class ReportingModule(BaseModule):
 
     def _create_jobboss_tab(self) -> QWidget:
         """Build the "JobBOSS Custom Reports" tab: pick a report type, browse
-        for the raw export, and strip it down to its summary lines.
+        (or drag-and-drop) the raw export, and strip it down to its summary
+        lines. Where to save is chosen via a Save As dialog when stripping,
+        not a separate output-path field.
 
         Built directly in Python rather than a .ui file -- simple enough
-        (one dropdown, two file pickers, one button) that hand-authoring
+        (one dropdown, one file picker, one button) that hand-authoring
         Designer XML would add risk without adding clarity.
         """
         widget = QWidget()
@@ -1654,7 +1655,7 @@ class ReportingModule(BaseModule):
         source_row.addWidget(QLabel("Raw Report File:"))
         self.jb_source_path_edit = QLineEdit()
         self.jb_source_path_edit.setReadOnly(True)
-        self.jb_source_path_edit.setPlaceholderText("Select the raw JobBOSS export...")
+        self.jb_source_path_edit.setPlaceholderText("Drop Excel file here or click Browse...")
         source_row.addWidget(self.jb_source_path_edit, 1)
         jb_browse_source_btn = QPushButton("Browse...")
         jb_browse_source_btn.clicked.connect(self._browse_jobboss_source)
@@ -1667,20 +1668,10 @@ class ReportingModule(BaseModule):
         source_hint.setStyleSheet("color: #888; padding: 2px; font-style: italic;")
         report_layout.addWidget(source_hint)
 
-        output_row = QHBoxLayout()
-        output_row.addWidget(QLabel("Output File:"))
-        self.jb_output_path_edit = QLineEdit()
-        self.jb_output_path_edit.setPlaceholderText("Auto-filled from the raw report...")
-        output_row.addWidget(self.jb_output_path_edit, 1)
-        jb_browse_output_btn = QPushButton("Browse...")
-        jb_browse_output_btn.clicked.connect(self._browse_jobboss_output)
-        output_row.addWidget(jb_browse_output_btn)
-        report_layout.addLayout(output_row)
-
         layout.addWidget(report_group)
 
         action_row = QHBoxLayout()
-        self.jb_strip_btn = QPushButton("Strip Report")
+        self.jb_strip_btn = QPushButton("Strip Report...")
         self.jb_strip_btn.setStyleSheet("font-weight: bold; padding: 8px 16px;")
         self.jb_strip_btn.clicked.connect(self._strip_jobboss_report)
         action_row.addWidget(self.jb_strip_btn)
@@ -1697,18 +1688,27 @@ class ReportingModule(BaseModule):
         layout.addWidget(self.jb_status_label)
 
         layout.addStretch()
+
+        # Drag-and-drop, mirroring the Fix & Export tab's widget-level drop
+        # target (_drag_enter_event is generic -- just an extension check --
+        # so it's reused as-is; only the drop destination differs).
+        widget.setAcceptDrops(True)
+        widget.dragEnterEvent = self._drag_enter_event
+        widget.dropEvent = self._jobboss_drop_event
+
         return widget
 
-    def _browse_jobboss_source(self):
-        """Browse for the raw JobBOSS report file, auto-detecting its report
-        type and suggesting an output path alongside it."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self._widget, "Select Raw Report File", "",
-            "Excel Files (*.xls *.xlsx);;All Files (*.*)"
-        )
-        if not file_path:
-            return
+    def _jobboss_drop_event(self, event):
+        """Handle a file dropped onto the JobBOSS Custom Reports tab."""
+        for url in event.mimeData().urls():
+            file_path = url.toLocalFile()
+            if file_path.lower().endswith(('.xls', '.xlsx')):
+                self._set_jobboss_source(file_path)
+                break
 
+    def _set_jobboss_source(self, file_path: str):
+        """Record the raw report file (from Browse or drag-and-drop) and
+        auto-detect its report type."""
         self.jb_source_path_edit.setText(file_path)
 
         handler = jobboss_reports.get_handler_for_filename(Path(file_path).name)
@@ -1717,31 +1717,29 @@ class ReportingModule(BaseModule):
             if idx >= 0:
                 self.jb_report_type_combo.setCurrentIndex(idx)
 
-        source_path = Path(file_path)
-        suggested = source_path.with_name(f"{source_path.stem}.stripped{source_path.suffix}")
-        self.jb_output_path_edit.setText(str(suggested))
         self.jb_status_label.setText("")
 
-    def _browse_jobboss_output(self):
-        """Browse for where to save the stripped report."""
-        file_path, _ = QFileDialog.getSaveFileName(
-            self._widget, "Select Output File",
-            self.jb_output_path_edit.text(),
-            "Excel Files (*.xlsx);;All Files (*.*)"
+    def _browse_jobboss_source(self):
+        """Browse for the raw JobBOSS report file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self._widget, "Select Raw Report File", "",
+            "Excel Files (*.xls *.xlsx);;All Files (*.*)"
         )
         if file_path:
-            self.jb_output_path_edit.setText(file_path)
+            self._set_jobboss_source(file_path)
 
     def _strip_jobboss_report(self):
-        """Run the selected report type's stripping transform."""
+        """Run the selected report type's stripping transform, prompting for
+        the output location with a Save As dialog."""
         source = self.jb_source_path_edit.text().strip()
         if not source:
             self.show_error("No Source File", "Please select a raw report file first.")
             return
-        if Path(source).suffix.lower() not in ('.xls', '.xlsx'):
+        source_path = Path(source)
+        if source_path.suffix.lower() not in ('.xls', '.xlsx'):
             self.show_error(
                 "Source Error",
-                f"'{Path(source).name}' is not an Excel file.\n\n"
+                f"'{source_path.name}' is not an Excel file.\n\n"
                 "The raw report must be the .xlsx or .xls workbook — "
                 "a PDF or printed/exported copy will not work."
             )
@@ -1752,14 +1750,16 @@ class ReportingModule(BaseModule):
             self.show_error("No Report Type", "Please select a report type.")
             return
 
-        output = self.jb_output_path_edit.text().strip()
+        suggested = source_path.with_name(f"{source_path.stem}.stripped{source_path.suffix}")
+        output, _ = QFileDialog.getSaveFileName(
+            self._widget, "Save Stripped Report As", str(suggested),
+            "Excel Files (*.xlsx);;All Files (*.*)"
+        )
         if not output:
-            source_path = Path(source)
-            output = str(source_path.with_name(f"{source_path.stem}.stripped{source_path.suffix}"))
-            self.jb_output_path_edit.setText(output)
+            return  # user cancelled
 
         try:
-            result = handler.strip(Path(source), Path(output))
+            result = handler.strip(source_path, Path(output))
         except Exception as e:
             self.jb_status_label.setText(f"Failed: {e}")
             self.show_error("Strip Failed", f"Failed to strip report:\n{e}")
@@ -1772,7 +1772,7 @@ class ReportingModule(BaseModule):
             f"{result.hidden_rows} detail row(s) hidden. Saved to: {result.output_path}"
         )
         self.log_message(
-            f"JobBOSS Custom Reports: stripped '{Path(source).name}' -> '{result.output_path.name}'"
+            f"JobBOSS Custom Reports: stripped '{source_path.name}' -> '{result.output_path.name}'"
         )
 
     def _open_jobboss_output_folder(self):
