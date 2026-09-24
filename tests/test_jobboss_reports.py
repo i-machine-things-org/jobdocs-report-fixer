@@ -210,7 +210,7 @@ class TestEmployeeEfficiencyStrip:
         wb, ws = self._load(out)
         assert 'EmployeeEfficiency' in ws.tables
         table = ws.tables['EmployeeEfficiency']
-        assert table.ref == f"A3:O{ws.max_row}"
+        assert table.ref == f"A3:P{ws.max_row}"  # O + the appended Employee Key column
         filter_values = set(table.autoFilter.filterColumn[0].filters.filter)
         assert filter_values == {
             'Employee:', 'Employee Total: ', 'Report Total:',
@@ -294,13 +294,14 @@ class TestEmployeeEfficiencyStrip:
 
 
 class TestHiddenColumns:
-    """Only column A (the "Employee:"/"Employee Total:" label plumbing) is
-    hidden, not deleted -- same treatment as the hidden detail rows. The raw
-    export's unlabeled trailing columns (H-O) are left visible; hiding them
-    too wasn't worth the upkeep for columns nobody reads anyway.
+    """Column A (the "Employee:"/"Employee Total:" label plumbing) and the
+    appended Employee Key column (see TestEmployeeKeyColumn) are hidden, not
+    deleted -- same treatment as the hidden detail rows. The raw export's
+    unlabeled trailing columns (H-O) are left visible; hiding them too
+    wasn't worth the upkeep for columns nobody reads anyway.
     """
 
-    def test_only_column_a_is_hidden(self, tmp_path):
+    def test_expected_columns_are_hidden(self, tmp_path):
         src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
         out = tmp_path / 'out.xlsx'
         EmployeeEfficiencyHandler().strip(src, out)
@@ -308,7 +309,7 @@ class TestHiddenColumns:
         wb = openpyxl.load_workbook(out)
         ws = wb.active
         hidden = {c for c, dim in ws.column_dimensions.items() if dim.hidden}
-        assert hidden == {'A'}
+        assert hidden == {'A', 'P'}  # P = the appended Employee Key column
         wb.close()
 
     def test_other_columns_are_not_hidden(self, tmp_path):
@@ -333,7 +334,7 @@ class TestHiddenColumns:
 
         wb = openpyxl.load_workbook(out)
         ws = wb.active
-        assert ws.max_column == 15, "hidden column must still be present, not removed"
+        assert ws.max_column == 16, "hidden column must still be present, not removed"
         assert ws.cell(row=4, column=1).value == 'Employee:'
         wb.close()
 
@@ -349,6 +350,136 @@ class TestHiddenColumns:
         ws = wb.active
         assert ws.column_dimensions['A'].width is not None
         assert ws.column_dimensions['A'].width > 0
+        wb.close()
+
+
+class TestEmployeeKeyColumn:
+    """A flat Excel Table has no concept of "these two rows are linked" --
+    sorting by any column other than this key repositions every row
+    independently by its own value in that column, which would otherwise
+    scatter an employee's Employee: row away from their own Employee Total:
+    row (e.g. rows 4 and 332 for the same employee in the real report,
+    since most columns hold completely different values on a label row vs.
+    a totals row). The appended, hidden key column gives every row in a
+    section the same value, so sorting by it (a stable sort, so a section's
+    internal order is preserved too) keeps -- or restores -- the grouping.
+    """
+
+    KEY_COL = 16  # column P: max_col (15) + 1
+
+    def _key_col_letter(self):
+        from openpyxl.utils import get_column_letter
+        return get_column_letter(self.KEY_COL)
+
+    def test_header_is_set(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        assert ws.cell(row=3, column=self.KEY_COL).value == 'Employee Key'
+        wb.close()
+
+    def test_employee_row_detail_rows_and_total_row_share_one_key(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 3)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        # row 4 = Employee:, rows 5-7 = detail, row 8 = Employee Total:
+        keys = [ws.cell(row=r, column=self.KEY_COL).value for r in range(4, 9)]
+        assert keys == ['EMPA'] * 5
+        wb.close()
+
+    def test_different_employees_get_different_keys(self, tmp_path):
+        src = _build_workbook(tmp_path, [
+            ('EMPA', 'FAKE, EMPLOYEE A', 1),
+            ('EMPB', 'FAKE, EMPLOYEE B', 1),
+        ])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        key_by_row = {r: ws.cell(row=r, column=self.KEY_COL).value for r in range(4, ws.max_row + 1)}
+        emp_a_keys = {v for r, v in key_by_row.items() if v == 'EMPA'}
+        emp_b_keys = {v for r, v in key_by_row.items() if v == 'EMPB'}
+        assert emp_a_keys == {'EMPA'}
+        assert emp_b_keys == {'EMPB'}
+        wb.close()
+
+    def test_report_total_and_footnote_have_no_key(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        report_total_row = next(
+            r for r in range(1, ws.max_row + 1)
+            if str(ws.cell(row=r, column=1).value or '').startswith('Report Total:')
+        )
+        footnote_row = ws.max_row
+        assert ws.cell(row=report_total_row, column=self.KEY_COL).value is None
+        assert ws.cell(row=footnote_row, column=self.KEY_COL).value is None
+        wb.close()
+
+    def test_totals_marker_row_has_no_key(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        totals_row = next(
+            r for r in range(1, ws.max_row + 1) if ws.cell(row=r, column=2).value == 'TOTALS'
+        )
+        assert ws.cell(row=totals_row, column=self.KEY_COL).value is None
+        wb.close()
+
+    def test_included_in_the_table_range(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        table = ws.tables['EmployeeEfficiency']
+        assert table.ref.endswith(f"{self._key_col_letter()}{ws.max_row}")
+        wb.close()
+
+    def test_sorting_by_key_keeps_each_section_together_and_in_order(self, tmp_path):
+        # Simulates what an end user gains from this column: a stable sort
+        # by the key groups every row of a section together, with the
+        # Employee: row still ahead of that same section's Employee Total:
+        # row -- immune to however the sections happened to be ordered
+        # (or scrambled by some other sort) beforehand.
+        src = _build_workbook(tmp_path, [
+            ('ZEBRA', 'FAKE, ZEBRA EMPLOYEE', 2),
+            ('APPLE', 'FAKE, APPLE EMPLOYEE', 2),
+        ])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        rows = [
+            (ws.cell(row=r, column=self.KEY_COL).value or '', r, ws.cell(row=r, column=1).value)
+            for r in range(4, ws.max_row + 1)
+        ]
+        # A stable sort by key alone (original relative order as tiebreaker).
+        sorted_rows = sorted(rows, key=lambda item: item[0])
+
+        for key in ('ZEBRA', 'APPLE'):
+            section = [r for r in sorted_rows if r[0] == key]
+            assert section == sorted(section, key=lambda item: item[1]), (
+                "a section's own rows must stay in original relative order after sorting by key"
+            )
+            labels = [r[2] for r in section]
+            assert labels[0] == 'Employee:'
+            assert str(labels[-1]).startswith('Employee Total:')
         wb.close()
 
 

@@ -96,6 +96,11 @@ class EmployeeEfficiencyHandler(ReportHandler):
     _TOTALS_LABEL = 'TOTALS'
     _YEAR_PATTERN = re.compile(r'^(\d{4})-')
 
+    # Header for the appended group-key column (see strip()) -- must be
+    # unique against every entry in _HEADER_ROW for openpyxl's Table to
+    # accept it.
+    _KEY_COLUMN_HEADER = 'Employee Key'
+
     def matches(self, filename: str) -> bool:
         stem = Path(filename).stem.lower()
         for ch in ('_', ' ', '-'):
@@ -110,8 +115,9 @@ class EmployeeEfficiencyHandler(ReportHandler):
         return any(text.startswith(prefix) for prefix in cls._VISIBLE_PREFIXES)
 
     @staticmethod
-    def _autofit_columns(ws, max_col: int) -> None:
-        """Size each column to fit its widest *visible* cell, capped at 50 --
+    def _autofit_columns(ws, last_col: int) -> None:
+        """Size each column (1..last_col) to fit its widest *visible* cell,
+        capped at 50 --
         matches the Fix & Export tab's own auto-fit behavior. Run after every
         value (including the relabeled headers and title/group rows) is in
         place, and after row visibility has already been decided.
@@ -136,7 +142,7 @@ class EmployeeEfficiencyHandler(ReportHandler):
           column instead sizes to its header/text content.
         """
         merged_anchors = {(rng.min_row, rng.min_col) for rng in ws.merged_cells.ranges}
-        for col_idx in range(1, max_col + 1):
+        for col_idx in range(1, last_col + 1):
             column_letter = get_column_letter(col_idx)
             max_length = 0
             for cell in ws[column_letter]:
@@ -244,6 +250,25 @@ class EmployeeEfficiencyHandler(ReportHandler):
         for col_idx, label in enumerate(self._HEADER_ROW[:max_col], start=1):
             ws.cell(row=header_row, column=col_idx, value=label)
 
+        # An appended, hidden group-key column: every row belonging to one
+        # employee's section (their Employee: row, all its detail rows, and
+        # their Employee Total: row) gets that employee's code written here.
+        # A flat Excel Table has no concept of "these two rows are linked" --
+        # sorting by any other column repositions each row independently by
+        # its own value in that column, scattering an employee's Employee:
+        # row away from their own Employee Total: row (e.g. rows 4 and 332
+        # for the same employee) since most columns hold wildly different
+        # values on a label row vs. a totals row. Sorting BY this key column
+        # (a stable sort, so original relative order within a key is kept)
+        # is what actually keeps a section's rows together and in order;
+        # nothing prevents a sort by an unrelated column from scattering
+        # them again, but the key makes every row's section recoverable/
+        # re-groupable on demand rather than only ever inferable from
+        # position.
+        key_col = max_col + 1
+        key_col_letter = get_column_letter(key_col)
+        ws.cell(row=header_row, column=key_col, value=self._KEY_COLUMN_HEADER)
+
         # Hide every data row whose column-A label isn't a summary line --
         # this is the actual "stripping". Nothing is deleted. The TOTALS
         # marker row has no column-A label of its own (its text is in column
@@ -251,11 +276,19 @@ class EmployeeEfficiencyHandler(ReportHandler):
         filter_values = set()
         visible_count = 0
         hidden_count = 0
+        current_key = ''
         for row_idx in range(header_row + 1, ws.max_row + 1):
             if row_idx == totals_row:
+                ws.cell(row=row_idx, column=key_col, value=None)
                 continue
             value = ws.cell(row=row_idx, column=1).value
             text = str(value).strip() if value is not None else ''
+            if text == 'Employee:':
+                current_key = str(ws.cell(row=row_idx, column=2).value or '').strip()
+            elif text.startswith('Report Total:') or text.startswith(self._FOOTNOTE_PREFIX):
+                current_key = ''
+            ws.cell(row=row_idx, column=key_col, value=current_key or None)
+
             is_shown = self._is_visible_label(value)
             if is_shown or text.startswith(self._FOOTNOTE_PREFIX):
                 filter_values.add(str(value))
@@ -269,12 +302,12 @@ class EmployeeEfficiencyHandler(ReportHandler):
             ws.row_dimensions[totals_row].hidden = False
             visible_count += 1
 
-        # Wrap the header + data rows in an Excel Table with an AutoFilter
-        # pre-set to the summary-line values actually present in this run --
-        # reopening in Excel shows the filter dropdown already scoped
-        # correctly, not just cosmetically-hidden rows.
-        last_col_letter = get_column_letter(max_col)
-        table_ref = f"A{header_row}:{last_col_letter}{ws.max_row}"
+        # Wrap the header + data rows (plus the appended key column) in an
+        # Excel Table with an AutoFilter pre-set to the summary-line values
+        # actually present in this run -- reopening in Excel shows the
+        # filter dropdown already scoped correctly, not just cosmetically-
+        # hidden rows.
+        table_ref = f"A{header_row}:{key_col_letter}{ws.max_row}"
         table = Table(displayName='EmployeeEfficiency', ref=table_ref)
         table.tableStyleInfo = TableStyleInfo(
             name='TableStyleLight1', showFirstColumn=False, showLastColumn=False,
@@ -286,14 +319,16 @@ class EmployeeEfficiencyHandler(ReportHandler):
         )
         ws.add_table(table)
 
-        self._autofit_columns(ws, max_col)
+        self._autofit_columns(ws, key_col)
 
         # Hide (not delete) the columns not meaningful for this summary view,
         # after autofit so a hidden column still remembers a real width --
         # exactly like a row a person hides in Excel rather than deleting.
-        for col_idx in self._HIDDEN_COLUMNS:
-            if col_idx <= max_col:
-                ws.column_dimensions[get_column_letter(col_idx)].hidden = True
+        # The key column is plumbing, not something to read, so it's hidden
+        # the same way -- still selectable as a sort column by header name
+        # even while hidden.
+        for col_idx in (*self._HIDDEN_COLUMNS, key_col):
+            ws.column_dimensions[get_column_letter(col_idx)].hidden = True
 
         output_path = Path(output_path)
         wb.save(output_path)
