@@ -81,9 +81,13 @@ class EmployeeEfficiencyHandler(ReportHandler):
     # treatment as rows) in the stripped output: column A carries the
     # "Employee:"/"Employee Total:" label plumbing the filter runs on, not
     # something worth reading once the employee code/name in B/C are right
-    # there; H, I, J, K, O are the raw export's unlabeled trailing columns
-    # ("Column1"/"Column2"/etc.), not meaningful for this summary view.
-    _HIDDEN_COLUMNS = {1, 8, 9, 10, 11, 15}
+    # there; H through O (Column1/Column2/etc.) are the raw export's
+    # unlabeled trailing columns, not meaningful for this summary view.
+    # Hidden, never deleted -- H-O visually reads as "the sheet ends after
+    # G" since it's one contiguous hidden block, but every one of those
+    # columns (and its data) is still there, just collapsed, exactly like
+    # the hidden detail rows.
+    _HIDDEN_COLUMNS = {1, 8, 9, 10, 11, 12, 13, 14, 15}
 
     # Rows shown by default. The footnote is deliberately not one of these --
     # it's disclaimer text, not a name or a total, so it stays hidden behind
