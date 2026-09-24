@@ -21,7 +21,8 @@ No exceptions.
 - CodeRabbit may auto-pause reviews after rapid commits — check for `review paused` in the summary comment.
 - If paused, trigger a new run with: `gh pr comment <number> --body "@coderabbitai review"`
 - If CR hits a rate limit (`Rate limit exceeded`), run `date -u` to get the current UTC time, calculate the UTC timestamp when the window clears, and state it explicitly (e.g. "clears at 05:04 UTC"). Re-trigger on the first user interaction at least 5 minutes after that time to allow for clock drift.
-- **Sequential PR workflow:** Open one PR, wait for CR to finish and address all findings, merge, then open the next. Do not trigger multiple concurrent CodeRabbit reviews.
+- **Sequential PR workflow:** Open one PR (as a draft — see Rule 6), get the user's explicit approval to mark it ready, wait for CR to finish and address all findings, merge, then open the next. Do not trigger multiple concurrent CodeRabbit reviews.
+- CodeRabbit's default configuration does not auto-review draft PRs — marking a PR ready for review (`gh pr ready <number>`) is what triggers its first review, not PR creation. Don't expect or wait for CodeRabbit comments while a PR is still in draft.
 
 ## Trigger Prompt
 
@@ -59,7 +60,7 @@ Rules:
 - One logical change per commit. Do not bundle unrelated changes.
 - Commit after every meaningful change, not at the end of a long session.
 - If a new feature is added or changed, update `README.md` before committing.
-- After every commit, check if a PR exists (`gh pr list --head <branch>`). If none exists, open one immediately via `gh pr create`.
+- After every commit, check if a PR exists (`gh pr list --head <branch>`). If none exists, open one immediately via `gh pr create --draft`.
 
 ## Rule 3: Fork From the Template — Backport Template Changes
 
@@ -111,7 +112,8 @@ Check after every merge. Do not wait for the user to ask.
 
 ## Rule 6: Pull Request Reviews
 
-- Always open PRs via `gh pr create` — never merge directly to `master`.
+- Always open PRs via `gh pr create --draft` — never merge directly to `master`.
+- **New PRs start as drafts and stay in draft until the user explicitly approves making them active.** Only run `gh pr ready <number>` after that explicit go-ahead — never mark a PR ready for review on your own judgment, even if CI is green and all findings are addressed. Readiness for human/CodeRabbit review is the user's call, not something to infer from the state of the code.
 - Read all CodeRabbit and human comments before making further changes.
 - For each finding, regardless of source:
   1. If it matches an existing `.claude/CODING_NOTES.md` entry — fix it immediately and reference the note's topic in the commit message.
