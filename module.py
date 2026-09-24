@@ -1663,7 +1663,8 @@ class ReportingModule(BaseModule):
         report_layout.addLayout(source_row)
 
         source_hint = QLabel(
-            "Must be the Excel workbook (.xlsx or .xls) — a PDF or printed copy will not work."
+            "Must be an .xlsx workbook — JobBOSS custom reports export as .xlsx, not "
+            "the legacy .xls format, and not a PDF or printed copy."
         )
         source_hint.setStyleSheet("color: #888; padding: 2px; font-style: italic;")
         report_layout.addWidget(source_hint)
@@ -1699,10 +1700,17 @@ class ReportingModule(BaseModule):
         return widget
 
     def _jobboss_drop_event(self, event):
-        """Handle a file dropped onto the JobBOSS Custom Reports tab."""
+        """Handle a file dropped onto the JobBOSS Custom Reports tab.
+
+        .xlsx only, not .xls: jobboss_reports.py loads input via openpyxl,
+        which cannot read the legacy .xls binary format at all (unlike the
+        Fix & Export tab above, which reads via pandas/xlrd and genuinely
+        supports it) -- accepting .xls here would just fail inside strip()
+        with a confusing error instead of this clear, immediate one.
+        """
         for url in event.mimeData().urls():
             file_path = url.toLocalFile()
-            if file_path.lower().endswith(('.xls', '.xlsx')):
+            if file_path.lower().endswith('.xlsx'):
                 self._set_jobboss_source(file_path)
                 break
 
@@ -1720,10 +1728,11 @@ class ReportingModule(BaseModule):
         self.jb_status_label.setText("")
 
     def _browse_jobboss_source(self):
-        """Browse for the raw JobBOSS report file."""
+        """Browse for the raw JobBOSS report file. .xlsx only -- see
+        _jobboss_drop_event()'s docstring for why .xls isn't offered here."""
         file_path, _ = QFileDialog.getOpenFileName(
             self._widget, "Select Raw Report File", "",
-            "Excel Files (*.xls *.xlsx);;All Files (*.*)"
+            "Excel Files (*.xlsx);;All Files (*.*)"
         )
         if file_path:
             self._set_jobboss_source(file_path)
@@ -1736,12 +1745,12 @@ class ReportingModule(BaseModule):
             self.show_error("No Source File", "Please select a raw report file first.")
             return
         source_path = Path(source)
-        if source_path.suffix.lower() not in ('.xls', '.xlsx'):
+        if source_path.suffix.lower() != '.xlsx':
             self.show_error(
                 "Source Error",
-                f"'{source_path.name}' is not an Excel file.\n\n"
-                "The raw report must be the .xlsx or .xls workbook — "
-                "a PDF or printed/exported copy will not work."
+                f"'{source_path.name}' is not an .xlsx file.\n\n"
+                "JobBOSS custom reports export as .xlsx — the legacy .xls format "
+                "isn't supported here, and a PDF or printed/exported copy will not work."
             )
             return
 
@@ -1750,7 +1759,11 @@ class ReportingModule(BaseModule):
             self.show_error("No Report Type", "Please select a report type.")
             return
 
-        suggested = source_path.with_name(f"{source_path.stem}.stripped{source_path.suffix}")
+        # Always suggest an .xlsx name regardless of the source's own suffix --
+        # the handler always writes .xlsx content (openpyxl has no other
+        # output format), so a mismatched suggested extension would be wrong
+        # even though source_path itself is already guaranteed .xlsx above.
+        suggested = source_path.with_name(f"{source_path.stem}.stripped.xlsx")
         output, _ = QFileDialog.getSaveFileName(
             self._widget, "Save Stripped Report As", str(suggested),
             "Excel Files (*.xlsx);;All Files (*.*)"

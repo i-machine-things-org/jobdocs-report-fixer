@@ -90,9 +90,12 @@ class EmployeeEfficiencyHandler(ReportHandler):
     _HIDDEN_COLUMNS = {1, 8, 9, 10, 11, 12, 13, 14, 15}
 
     # Rows shown by default. The footnote is deliberately not one of these --
-    # it's disclaimer text, not a name or a total, so it stays hidden behind
-    # the filter like any other detail row even though it's still one of the
-    # values listed in the filter dropdown (see _FOOTNOTE_PREFIX below).
+    # it's disclaimer text, not a name or a total, so it's hidden like any
+    # other detail row, and (unlike Employee:/Employee Total:/Report Total:)
+    # its value is never added to the AutoFilter's checked criteria either
+    # (see _FOOTNOTE_PREFIX below) -- Excel can re-show a row whose value
+    # matches a checked filter value if the filter is ever reapplied, which
+    # would silently undo the hide.
     _VISIBLE_PREFIXES = ('Employee:', 'Employee Total:', 'Report Total:')
     _FOOTNOTE_PREFIX = '********'
 
@@ -221,6 +224,12 @@ class EmployeeEfficiencyHandler(ReportHandler):
         return f'Employee Efficiency {min(years)} - {max(years)}'
 
     def strip(self, input_path: Path, output_path: Path) -> StripResult:
+        input_path = Path(input_path)
+        if input_path.suffix.lower() != '.xlsx':
+            raise ValueError(
+                f"{input_path.name} must be an .xlsx workbook -- openpyxl cannot read "
+                "the legacy .xls format. Re-save the export as .xlsx first."
+            )
         wb = load_workbook(input_path)
         ws = wb.active
         if ws is None:
@@ -329,9 +338,8 @@ class EmployeeEfficiencyHandler(ReportHandler):
             ws.cell(row=row_idx, column=key_col, value=current_key or None)
 
             is_shown = self._is_visible_label(value)
-            if is_shown or text.startswith(self._FOOTNOTE_PREFIX):
-                filter_values.add(str(value))
             if is_shown:
+                filter_values.add(str(value))
                 visible_count += 1
                 ws.row_dimensions[row_idx].hidden = False
             else:
@@ -354,7 +362,18 @@ class EmployeeEfficiencyHandler(ReportHandler):
         )
         table.autoFilter = AutoFilter(
             ref=table_ref,
-            filterColumn=[FilterColumn(colId=0, filters=Filters(filter=sorted(filter_values)))],
+            filterColumn=[FilterColumn(
+                colId=0,
+                filters=Filters(
+                    filter=sorted(filter_values),
+                    # The TOTALS marker row has no column-A value (blank) but is
+                    # shown -- without this, Excel's filter criteria has no entry
+                    # matching "blank" and can hide it if the filter is ever
+                    # reapplied, contradicting the explicit row_dimensions.hidden
+                    # set above.
+                    blank=totals_row is not None,
+                ),
+            )],
         )
         ws.add_table(table)
 

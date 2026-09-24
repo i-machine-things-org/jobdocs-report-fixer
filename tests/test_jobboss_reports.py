@@ -96,6 +96,17 @@ class TestEmployeeEfficiencyStrip:
         wb = openpyxl.load_workbook(path)
         return wb, wb.active
 
+    def test_rejects_xls_input_with_a_clear_error(self, tmp_path):
+        # openpyxl's load_workbook can't read the legacy .xls binary format at
+        # all -- a real .xls file would otherwise fail deep inside strip()
+        # with a confusing error instead of this clear, immediate one.
+        fake_xls = tmp_path / 'FAKE_EmployeeEfficiency.xls'
+        fake_xls.write_bytes(b'not a real xls file')
+        out = tmp_path / 'out.xlsx'
+
+        with pytest.raises(ValueError, match=r'\.xlsx'):
+            EmployeeEfficiencyHandler().strip(fake_xls, out)
+
     def test_no_rows_are_deleted(self, tmp_path):
         src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 2), ('EMPB', 'FAKE, EMPLOYEE B', 3)])
         out = tmp_path / 'out.xlsx'
@@ -211,11 +222,37 @@ class TestEmployeeEfficiencyStrip:
         assert 'EmployeeEfficiency' in ws.tables
         table = ws.tables['EmployeeEfficiency']
         assert table.ref == f"A3:P{ws.max_row}"  # O + the appended Employee Key column
-        filter_values = set(table.autoFilter.filterColumn[0].filters.filter)
-        assert filter_values == {
-            'Employee:', 'Employee Total: ', 'Report Total:',
-            '********: fake footnote for testing.',
-        }
+        filters = table.autoFilter.filterColumn[0].filters
+        # The footnote is deliberately excluded even though it's a real
+        # column-A value in the sheet: Excel can re-show a hidden row if its
+        # value matches a *checked* filter criterion when the filter is ever
+        # reapplied, which would silently undo the footnote's hide.
+        assert set(filters.filter) == {'Employee:', 'Employee Total: ', 'Report Total:'}
+        # The TOTALS marker row has a blank column-A value but must stay
+        # visible -- without an explicit blank criterion, Excel's filter has
+        # nothing matching "blank" and can hide it on reapply too.
+        assert filters.blank is True
+        wb.close()
+
+    def test_filter_has_no_blank_criterion_when_there_is_no_totals_row(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        # Remove the Report Total row so strip() never inserts a TOTALS marker.
+        wb_in = openpyxl.load_workbook(src)
+        ws_in = wb_in.active
+        report_total_row = next(
+            r for r in range(1, ws_in.max_row + 1)
+            if str(ws_in.cell(row=r, column=1).value or '').startswith('Report Total:')
+        )
+        ws_in.delete_rows(report_total_row)
+        wb_in.save(src)
+        wb_in.close()
+
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb, ws = self._load(out)
+        table = ws.tables['EmployeeEfficiency']
+        assert table.autoFilter.filterColumn[0].filters.blank is False
         wb.close()
 
     def test_never_touches_the_real_source_file(self, tmp_path):
