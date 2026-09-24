@@ -16,7 +16,8 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from PyQt6.QtWidgets import (
     QWidget, QTableWidgetItem, QFileDialog, QHeaderView, QAbstractItemView,
-    QMessageBox
+    QMessageBox, QTabWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+    QLineEdit, QPushButton, QComboBox
 )
 from PyQt6.QtCore import Qt
 from PyQt6 import uic
@@ -37,6 +38,16 @@ try:
     OPENPYXL_AVAILABLE = True
 except ImportError:
     OPENPYXL_AVAILABLE = False
+
+try:
+    # Relative import: how this module is actually loaded as a JobDocs
+    # external plugin (see core/module_loader.py in the host app -- module.py
+    # is loaded with its own directory as a submodule search path so sibling
+    # files resolve via '.'). Falls back to a plain import for standalone/
+    # test execution, where this file isn't loaded as part of a package.
+    from . import jobboss_reports
+except ImportError:
+    import jobboss_reports
 
 
 class ReportingModule(BaseModule):
@@ -73,6 +84,15 @@ class ReportingModule(BaseModule):
         self.preview_mode = 'columns'  # 'columns' or 'customers'
         self._aliases_cache = None  # Cached customer aliases (invalidated on save)
 
+        # JobBOSS Custom Reports tab (widget references)
+        self.jb_report_type_combo = None
+        self.jb_source_path_edit = None
+        self.jb_output_path_edit = None
+        self.jb_strip_btn = None
+        self.jb_open_output_btn = None
+        self.jb_status_label = None
+        self.jb_last_output_path = None  # Path to the most recently stripped report
+
     def get_name(self) -> str:
         return "Report Fixer"
 
@@ -96,7 +116,6 @@ class ReportingModule(BaseModule):
 
         # Check dependencies
         if not PANDAS_AVAILABLE or not OPENPYXL_AVAILABLE:
-            from PyQt6.QtWidgets import QVBoxLayout, QLabel
             layout = QVBoxLayout(widget)
             missing = []
             if not PANDAS_AVAILABLE:
@@ -165,7 +184,20 @@ class ReportingModule(BaseModule):
         # Populate customer list
         self._populate_customers()
 
-        return widget
+        # Wrap the existing Fix & Export UI as one inner tab alongside the
+        # JobBOSS Custom Reports tab -- both live under this plugin's single
+        # "Report Fixer" JobDocs tab (the plugin loader gives each plugin
+        # folder exactly one top-level tab; see core/module_loader.py in the
+        # host app).
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        tabs = QTabWidget()
+        tabs.addTab(widget, "Fix && Export")
+        tabs.addTab(self._create_jobboss_tab(), "JobBOSS Custom Reports")
+        outer_layout.addWidget(tabs)
+
+        return outer
 
     def _get_ui_path(self) -> Path:
         """Get path to the UI file (always relative to this plugin module)."""
@@ -1584,6 +1616,169 @@ class ReportingModule(BaseModule):
         """Open the output folder in file explorer"""
         if self.last_output_path and self.last_output_path.parent.exists():
             success, error = open_folder(str(self.last_output_path.parent))
+            if not success:
+                self.show_error("Error", error or "Could not open folder")
+
+    # ==================== JobBOSS Custom Reports ====================
+    #
+    # A separate, simpler workflow from Fix & Export above: instead of
+    # remapping columns against a template, these reports are stripped down
+    # to their summary lines (e.g. per-employee totals) by hiding the detail
+    # rows in an Excel Table/AutoFilter -- see jobboss_reports.py for the
+    # actual transform logic, which has no Qt/JobDocs dependency of its own
+    # and is independently unit-tested.
+
+    def _create_jobboss_tab(self) -> QWidget:
+        """Build the "JobBOSS Custom Reports" tab: pick a report type, browse
+        for the raw export, and strip it down to its summary lines.
+
+        Built directly in Python rather than a .ui file -- simple enough
+        (one dropdown, two file pickers, one button) that hand-authoring
+        Designer XML would add risk without adding clarity.
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        report_group = QGroupBox("Report")
+        report_layout = QVBoxLayout(report_group)
+
+        type_row = QHBoxLayout()
+        type_row.addWidget(QLabel("Report Type:"))
+        self.jb_report_type_combo = QComboBox()
+        for handler in jobboss_reports.REPORT_HANDLERS:
+            self.jb_report_type_combo.addItem(handler.display_name, handler)
+        type_row.addWidget(self.jb_report_type_combo, 1)
+        report_layout.addLayout(type_row)
+
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Raw Report File:"))
+        self.jb_source_path_edit = QLineEdit()
+        self.jb_source_path_edit.setReadOnly(True)
+        self.jb_source_path_edit.setPlaceholderText("Select the raw JobBOSS export...")
+        source_row.addWidget(self.jb_source_path_edit, 1)
+        jb_browse_source_btn = QPushButton("Browse...")
+        jb_browse_source_btn.clicked.connect(self._browse_jobboss_source)
+        source_row.addWidget(jb_browse_source_btn)
+        report_layout.addLayout(source_row)
+
+        source_hint = QLabel(
+            "Must be the Excel workbook (.xlsx or .xls) — a PDF or printed copy will not work."
+        )
+        source_hint.setStyleSheet("color: #888; padding: 2px; font-style: italic;")
+        report_layout.addWidget(source_hint)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("Output File:"))
+        self.jb_output_path_edit = QLineEdit()
+        self.jb_output_path_edit.setPlaceholderText("Auto-filled from the raw report...")
+        output_row.addWidget(self.jb_output_path_edit, 1)
+        jb_browse_output_btn = QPushButton("Browse...")
+        jb_browse_output_btn.clicked.connect(self._browse_jobboss_output)
+        output_row.addWidget(jb_browse_output_btn)
+        report_layout.addLayout(output_row)
+
+        layout.addWidget(report_group)
+
+        action_row = QHBoxLayout()
+        self.jb_strip_btn = QPushButton("Strip Report")
+        self.jb_strip_btn.setStyleSheet("font-weight: bold; padding: 8px 16px;")
+        self.jb_strip_btn.clicked.connect(self._strip_jobboss_report)
+        action_row.addWidget(self.jb_strip_btn)
+        self.jb_open_output_btn = QPushButton("Open Output Folder")
+        self.jb_open_output_btn.setEnabled(False)
+        self.jb_open_output_btn.clicked.connect(self._open_jobboss_output_folder)
+        action_row.addWidget(self.jb_open_output_btn)
+        action_row.addStretch()
+        layout.addLayout(action_row)
+
+        self.jb_status_label = QLabel("")
+        self.jb_status_label.setWordWrap(True)
+        self.jb_status_label.setStyleSheet("color: #666; padding: 4px;")
+        layout.addWidget(self.jb_status_label)
+
+        layout.addStretch()
+        return widget
+
+    def _browse_jobboss_source(self):
+        """Browse for the raw JobBOSS report file, auto-detecting its report
+        type and suggesting an output path alongside it."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self._widget, "Select Raw Report File", "",
+            "Excel Files (*.xls *.xlsx);;All Files (*.*)"
+        )
+        if not file_path:
+            return
+
+        self.jb_source_path_edit.setText(file_path)
+
+        handler = jobboss_reports.get_handler_for_filename(Path(file_path).name)
+        if handler is not None:
+            idx = self.jb_report_type_combo.findText(handler.display_name)
+            if idx >= 0:
+                self.jb_report_type_combo.setCurrentIndex(idx)
+
+        source_path = Path(file_path)
+        suggested = source_path.with_name(f"{source_path.stem}.stripped{source_path.suffix}")
+        self.jb_output_path_edit.setText(str(suggested))
+        self.jb_status_label.setText("")
+
+    def _browse_jobboss_output(self):
+        """Browse for where to save the stripped report."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self._widget, "Select Output File",
+            self.jb_output_path_edit.text(),
+            "Excel Files (*.xlsx);;All Files (*.*)"
+        )
+        if file_path:
+            self.jb_output_path_edit.setText(file_path)
+
+    def _strip_jobboss_report(self):
+        """Run the selected report type's stripping transform."""
+        source = self.jb_source_path_edit.text().strip()
+        if not source:
+            self.show_error("No Source File", "Please select a raw report file first.")
+            return
+        if Path(source).suffix.lower() not in ('.xls', '.xlsx'):
+            self.show_error(
+                "Source Error",
+                f"'{Path(source).name}' is not an Excel file.\n\n"
+                "The raw report must be the .xlsx or .xls workbook — "
+                "a PDF or printed/exported copy will not work."
+            )
+            return
+
+        handler = self.jb_report_type_combo.currentData()
+        if handler is None:
+            self.show_error("No Report Type", "Please select a report type.")
+            return
+
+        output = self.jb_output_path_edit.text().strip()
+        if not output:
+            source_path = Path(source)
+            output = str(source_path.with_name(f"{source_path.stem}.stripped{source_path.suffix}"))
+            self.jb_output_path_edit.setText(output)
+
+        try:
+            result = handler.strip(Path(source), Path(output))
+        except Exception as e:
+            self.jb_status_label.setText(f"Failed: {e}")
+            self.show_error("Strip Failed", f"Failed to strip report:\n{e}")
+            return
+
+        self.jb_last_output_path = result.output_path
+        self.jb_open_output_btn.setEnabled(True)
+        self.jb_status_label.setText(
+            f"Done — {result.visible_rows} summary row(s) shown, "
+            f"{result.hidden_rows} detail row(s) hidden. Saved to: {result.output_path}"
+        )
+        self.log_message(
+            f"JobBOSS Custom Reports: stripped '{Path(source).name}' -> '{result.output_path.name}'"
+        )
+
+    def _open_jobboss_output_folder(self):
+        """Open the folder containing the most recently stripped report."""
+        if self.jb_last_output_path and self.jb_last_output_path.parent.exists():
+            success, error = open_folder(str(self.jb_last_output_path.parent))
             if not success:
                 self.show_error("Error", error or "Could not open folder")
 

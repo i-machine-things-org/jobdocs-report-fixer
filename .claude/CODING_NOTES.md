@@ -22,6 +22,12 @@
 
 **Avoid `zip(strict=True)` — it requires Python 3.10+.** If `requirements.txt` doesn't pin Python ≥3.10, replace with an explicit length check and `raise ValueError` before zipping.
 
+## JobBOSS Custom Reports (jobboss_reports.py)
+
+**`openpyxl`'s `Worksheet.insert_rows()` does not shift already-existing merged-cell ranges — only cell values.** Calling `merge_cells()` right after an `insert_rows(1)`, then calling `insert_rows(1)` again, leaves the first merge stuck at its original row instead of moving down with everything else. Do every `insert_rows()` call first, then create all `merge_cells()`/cell-value writes afterward, once row numbers are final.
+
+**Never hardcode a report's title/date range — derive it from the data.** The report title's fiscal-year range came from period-code rows already in the sheet (e.g. `"2025-DEC"`, `"2026-JAN"`); scanning column A for a `^\d{4}-` prefix and taking min/max keeps the same handler correct on next year's export with no code change.
+
 ## Report Regeneration — Preserving Manual Edits (module.py)
 
 **Every report regeneration must be additive-only toward the previous file — never delete a manual edit or highlight.** `_get_completed_jobs`/`_save_formatted_excel` carry forward *any* highlighted cell (any color, any column, not just yellow on Scheduled End Date) and *any* manually-typed value into a cell the fresh transform left blank. A cell only changes when this run has a legitimate new computed value (fresh source data, or the tool's own schedule-change/late-date coloring) for it — it is never silently blanked or un-highlighted.
