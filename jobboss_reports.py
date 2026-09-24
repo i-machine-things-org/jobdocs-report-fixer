@@ -5,7 +5,10 @@ its summary lines by hiding the detail rows inside an Excel Table/AutoFilter.
 Nothing is deleted: every detail row is still in the sheet, just hidden, so
 clearing the filter in Excel brings it all back. This mirrors how a person
 would do it by hand (Insert > Table, then filter column A down to just the
-label rows) rather than actually removing data.
+label rows) rather than actually removing data. Sorting is disabled (via
+unpassworded sheet protection) since a flat table sort would reposition each
+row independently and scatter a summary row (e.g. "Employee Total:") away
+from the detail/name rows it belongs with.
 
 Each JobBOSS custom report type has its own fixed column layout (that's the
 report definition in JobBOSS, not something that varies run to run), so a
@@ -19,7 +22,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Font, Protection
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.filters import AutoFilter, FilterColumn, Filters
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -156,6 +159,46 @@ class EmployeeEfficiencyHandler(ReportHandler):
                     max_length = max(max_length, len(str(cell.value)))
             ws.column_dimensions[column_letter].width = min(max_length + 2, 50)
 
+    @staticmethod
+    def _disable_sorting(ws, last_row: int, last_col: int) -> None:
+        """Block Excel's Sort commands (ribbon, and the Sort options inside
+        the Table/AutoFilter dropdown) via sheet protection -- a hidden key
+        column only gives a way to *recover* from a sort scattering an
+        employee's Employee: row away from their own Employee Total: row;
+        it can't stop the sort from happening in the first place. Disabling
+        sort outright is the only way to actually prevent it.
+
+        No password is set: this is meant to stop an accidental/casual sort
+        click, not to secure the file. Anyone who deliberately needs to sort
+        can still do so via Review > Unprotect Sheet.
+
+        Every other protectable action (formatting, filtering, inserting/
+        deleting rows or columns, etc.) is explicitly left allowed, and
+        every existing cell is explicitly unlocked first -- a freshly
+        protected sheet defaults every other action to "disallowed" and
+        every cell to "locked" unless told otherwise, which would silently
+        make the whole sheet read-only instead of just blocking sort.
+        """
+        unlocked = Protection(locked=False)
+        for row in ws.iter_rows(min_row=1, max_row=last_row, min_col=1, max_col=last_col):
+            for cell in row:
+                cell.protection = unlocked
+
+        ws.protection.sheet = True
+        ws.protection.sort = True
+        ws.protection.formatCells = False
+        ws.protection.formatColumns = False
+        ws.protection.formatRows = False
+        ws.protection.insertColumns = False
+        ws.protection.insertRows = False
+        ws.protection.insertHyperlinks = False
+        ws.protection.deleteColumns = False
+        ws.protection.deleteRows = False
+        ws.protection.autoFilter = False
+        ws.protection.pivotTables = False
+        ws.protection.objects = False
+        ws.protection.scenarios = False
+
     @classmethod
     def _derive_title(cls, ws) -> str:
         """Build the report title from the fiscal-year range actually present
@@ -253,18 +296,14 @@ class EmployeeEfficiencyHandler(ReportHandler):
         # An appended, hidden group-key column: every row belonging to one
         # employee's section (their Employee: row, all its detail rows, and
         # their Employee Total: row) gets that employee's code written here.
-        # A flat Excel Table has no concept of "these two rows are linked" --
-        # sorting by any other column repositions each row independently by
-        # its own value in that column, scattering an employee's Employee:
-        # row away from their own Employee Total: row (e.g. rows 4 and 332
-        # for the same employee) since most columns hold wildly different
-        # values on a label row vs. a totals row. Sorting BY this key column
-        # (a stable sort, so original relative order within a key is kept)
-        # is what actually keeps a section's rows together and in order;
-        # nothing prevents a sort by an unrelated column from scattering
-        # them again, but the key makes every row's section recoverable/
-        # re-groupable on demand rather than only ever inferable from
-        # position.
+        # Sorting is disabled outright below (_disable_sorting()) so this
+        # isn't the primary defense against an employee's Employee: row
+        # (e.g. row 4) getting scattered away from their own Employee Total:
+        # row (e.g. row 332) -- it's the fallback for if the sheet is ever
+        # deliberately unprotected and sorted anyway: sorting BY this key
+        # (a stable sort, so a section's original relative order is kept)
+        # re-groups every section correctly, rather than the pairing being
+        # only ever inferable from row position.
         key_col = max_col + 1
         key_col_letter = get_column_letter(key_col)
         ws.cell(row=header_row, column=key_col, value=self._KEY_COLUMN_HEADER)
@@ -326,9 +365,12 @@ class EmployeeEfficiencyHandler(ReportHandler):
         # exactly like a row a person hides in Excel rather than deleting.
         # The key column is plumbing, not something to read, so it's hidden
         # the same way -- still selectable as a sort column by header name
-        # even while hidden.
+        # if the sheet is ever deliberately unprotected (see
+        # _disable_sorting()) to sort it after all.
         for col_idx in (*self._HIDDEN_COLUMNS, key_col):
             ws.column_dimensions[get_column_letter(col_idx)].hidden = True
+
+        self._disable_sorting(ws, ws.max_row, key_col)
 
         output_path = Path(output_path)
         wb.save(output_path)

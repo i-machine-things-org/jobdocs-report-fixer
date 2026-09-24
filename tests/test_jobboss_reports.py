@@ -523,3 +523,52 @@ class TestDerivedTitle:
         merged = {str(r) for r in ws.merged_cells.ranges}
         assert 'B1:G1' in merged
         wb.close()
+
+
+class TestSortIsDisabled:
+    """A hidden Employee Key column (TestEmployeeKeyColumn) only lets a
+    section be *re-grouped* after a sort scatters it -- it can't stop the
+    sort from happening. Sheet protection with only `sort` disallowed
+    actually prevents it (Excel greys out Sort in both the ribbon and the
+    Table/AutoFilter dropdown), while leaving every other action -- and
+    every existing cell -- explicitly unlocked so nothing else about the
+    sheet becomes accidentally read-only.
+    """
+
+    def _strip(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+        wb = openpyxl.load_workbook(out)
+        return wb, wb.active
+
+    def test_protection_is_enabled_with_no_password(self, tmp_path):
+        wb, ws = self._strip(tmp_path)
+        assert ws.protection.sheet is True
+        assert ws.protection.password in (None, '')
+        wb.close()
+
+    def test_sort_is_disallowed(self, tmp_path):
+        wb, ws = self._strip(tmp_path)
+        assert ws.protection.sort is True
+        wb.close()
+
+    @pytest.mark.parametrize('attr', [
+        'formatCells', 'formatColumns', 'formatRows',
+        'insertColumns', 'insertRows', 'insertHyperlinks',
+        'deleteColumns', 'deleteRows',
+        'autoFilter', 'pivotTables', 'objects', 'scenarios',
+    ])
+    def test_every_other_action_stays_allowed(self, tmp_path, attr):
+        wb, ws = self._strip(tmp_path)
+        assert getattr(ws.protection, attr) is False, f"{attr} should remain allowed"
+        wb.close()
+
+    def test_cells_remain_unlocked_for_editing(self, tmp_path):
+        wb, ws = self._strip(tmp_path)
+        # Sample across the used range, including a hidden row/column, to
+        # confirm the unlock pass wasn't scoped to only the visible cells.
+        for row, col in [(1, 1), (1, 2), (3, 1), (4, 1), (4, 3), (5, 8), (ws.max_row, 1)]:
+            cell = ws.cell(row=row, column=col)
+            assert cell.protection.locked is False, f"cell({row},{col}) should be unlocked"
+        wb.close()
