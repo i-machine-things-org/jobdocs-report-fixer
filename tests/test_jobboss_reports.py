@@ -294,12 +294,13 @@ class TestEmployeeEfficiencyStrip:
 
 
 class TestHiddenColumns:
-    """Column A (the "Employee:"/"Employee Total:" label plumbing) and the
-    raw export's unlabeled trailing columns are hidden, not deleted -- same
-    treatment as the hidden detail rows.
+    """Only column A (the "Employee:"/"Employee Total:" label plumbing) is
+    hidden, not deleted -- same treatment as the hidden detail rows. The raw
+    export's unlabeled trailing columns (H-O) are left visible; hiding them
+    too wasn't worth the upkeep for columns nobody reads anyway.
     """
 
-    def test_expected_columns_are_hidden(self, tmp_path):
+    def test_only_column_a_is_hidden(self, tmp_path):
         src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
         out = tmp_path / 'out.xlsx'
         EmployeeEfficiencyHandler().strip(src, out)
@@ -307,25 +308,22 @@ class TestHiddenColumns:
         wb = openpyxl.load_workbook(out)
         ws = wb.active
         hidden = {c for c, dim in ws.column_dimensions.items() if dim.hidden}
-        # H through O is one contiguous hidden block -- visually reads as
-        # "the sheet ends after G", but every column and its data is still
-        # there, just collapsed, not deleted.
-        assert hidden == {'A', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'}
+        assert hidden == {'A'}
         wb.close()
 
-    def test_visible_columns_are_not_hidden(self, tmp_path):
+    def test_other_columns_are_not_hidden(self, tmp_path):
         src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
         out = tmp_path / 'out.xlsx'
         EmployeeEfficiencyHandler().strip(src, out)
 
         wb = openpyxl.load_workbook(out)
         ws = wb.active
-        for letter in ('B', 'C', 'D', 'E', 'F', 'G'):
+        for letter in ('B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'):
             dim = ws.column_dimensions.get(letter)
             assert dim is None or not dim.hidden, f"column {letter} should not be hidden"
         wb.close()
 
-    def test_hidden_columns_are_not_deleted(self, tmp_path):
+    def test_hidden_column_is_not_deleted(self, tmp_path):
         # Hiding must never remove the column or its data -- unhiding in
         # Excel (or reading the file programmatically) must find everything
         # exactly where it was in the raw report.
@@ -335,9 +333,7 @@ class TestHiddenColumns:
 
         wb = openpyxl.load_workbook(out)
         ws = wb.active
-        assert ws.max_column == 15, "hidden columns must still be present, not removed"
-        # Row 4 is the Employee: row; column H (8) held a real value in the
-        # raw source and must still be readable once unhidden.
+        assert ws.max_column == 15, "hidden column must still be present, not removed"
         assert ws.cell(row=4, column=1).value == 'Employee:'
         wb.close()
 
