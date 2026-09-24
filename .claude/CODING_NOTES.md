@@ -28,6 +28,12 @@
 
 **Never hardcode a report's title/date range — derive it from the data.** The report title's fiscal-year range came from period-code rows already in the sheet (e.g. `"2025-DEC"`, `"2026-JAN"`); scanning column A for a `^\d{4}-` prefix and taking min/max keeps the same handler correct on next year's export with no code change.
 
+**Auto-fitting column width from `str(cell.value)` overstates numeric cells that already have a display `number_format`.** A raw float like `114.852138793421` measures 16 characters even though its `"#,##0.00"` format renders it much shorter — exclude `int`/`float` cells from the max-length scan and size columns from header/text content instead, or numeric columns balloon far wider than what Excel actually shows.
+
+**Excel's own AutoFit Column Width ignores hidden-row and merged-cell content — replicate both exclusions, not just one.** A hidden footnote row's long disclaimer text, and a title merged across several columns, both sit in the sheet at real cell coordinates; skip rows where `row_dimensions[row].hidden` and skip the anchor cell of any `merged_cells.ranges` entry before computing a column's max content length.
+
+**Hiding a column (not deleting it) still needs a real stored width, applied *before* setting `hidden = True`.** Autofit and column-hide are separate `column_dimensions` attributes on the same object — order them autofit-then-hide so a hidden column keeps a sensible width for whenever it's unhidden, instead of reading back as `None`/zero.
+
 ## Report Regeneration — Preserving Manual Edits (module.py)
 
 **Every report regeneration must be additive-only toward the previous file — never delete a manual edit or highlight.** `_get_completed_jobs`/`_save_formatted_excel` carry forward *any* highlighted cell (any color, any column, not just yellow on Scheduled End Date) and *any* manually-typed value into a cell the fresh transform left blank. A cell only changes when this run has a legitimate new computed value (fresh source data, or the tool's own schedule-change/late-date coloring) for it — it is never silently blanked or un-highlighted.

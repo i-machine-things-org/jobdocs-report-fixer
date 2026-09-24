@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.filters import AutoFilter, FilterColumn, Filters
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -49,8 +50,9 @@ class ReportHandler:
 class EmployeeEfficiencyHandler(ReportHandler):
     """Strips a JobBOSS LR_EmployeeEfficiency export down to just each
     employee's name line and their "Employee Total" line (plus the report
-    grand total and its footnote) -- the individual per-job/work-center
-    detail lines are hidden, not deleted.
+    grand total) -- the individual per-job/work-center detail lines, the
+    footnote, and a handful of not-useful-here raw columns are all hidden,
+    not deleted.
 
     The report's column layout is fixed (Setup hours in columns B-D, Run
     hours in columns E-G) -- only the row *count*, the employee names, and
@@ -75,7 +77,20 @@ class EmployeeEfficiencyHandler(ReportHandler):
         'Column2', 'Column1', 'Column3', 'Column6', 'Column7', 'Column8', 'Column9', 'Column10',
     ]
 
-    _VISIBLE_PREFIXES = ('Employee:', 'Employee Total:', 'Report Total:', '********')
+    # 1-indexed columns hidden (not deleted -- same hide-don't-delete
+    # treatment as rows) in the stripped output: column A carries the
+    # "Employee:"/"Employee Total:" label plumbing the filter runs on, not
+    # something worth reading once the employee code/name in B/C are right
+    # there; H, I, J, K, O are the raw export's unlabeled trailing columns
+    # ("Column1"/"Column2"/etc.), not meaningful for this summary view.
+    _HIDDEN_COLUMNS = {1, 8, 9, 10, 11, 15}
+
+    # Rows shown by default. The footnote is deliberately not one of these --
+    # it's disclaimer text, not a name or a total, so it stays hidden behind
+    # the filter like any other detail row even though it's still one of the
+    # values listed in the filter dropdown (see _FOOTNOTE_PREFIX below).
+    _VISIBLE_PREFIXES = ('Employee:', 'Employee Total:', 'Report Total:')
+    _FOOTNOTE_PREFIX = '********'
 
     _TOTALS_LABEL = 'TOTALS'
     _YEAR_PATTERN = re.compile(r'^(\d{4})-')
@@ -92,6 +107,47 @@ class EmployeeEfficiencyHandler(ReportHandler):
             return False
         text = str(value).strip()
         return any(text.startswith(prefix) for prefix in cls._VISIBLE_PREFIXES)
+
+    @staticmethod
+    def _autofit_columns(ws, max_col: int) -> None:
+        """Size each column to fit its widest *visible* cell, capped at 50 --
+        matches the Fix & Export tab's own auto-fit behavior. Run after every
+        value (including the relabeled headers and title/group rows) is in
+        place, and after row visibility has already been decided.
+
+        Three exclusions, all because a value is on the sheet but never meant
+        to set a column's width:
+        - Hidden rows: the footnote is genuinely long (~85 characters) and
+          spans columns A-C -- without this, autofit blows those columns out
+          to fit disclaimer text that's tucked behind the filter, not the
+          actual job/employee data anyone is meant to read at a glance.
+        - The anchor cell of any merged range (e.g. the title spanning
+          B1:G1): Excel's own AutoFit Column Width ignores merged-cell
+          content for exactly this reason -- a long title would otherwise
+          blow out a single column to fit text that's actually rendered
+          across several columns. MergedCell followers already read as
+          value=None, so only the anchor needs explicit exclusion.
+        - Numeric cells: hours/percentage columns carry full floating-point
+          precision (e.g. 114.852138793421) despite each already having its
+          own display number_format (e.g. "#,##0.00") that renders them
+          much shorter -- str(value) on the raw float wildly overstates
+          what Excel actually shows, so numbers are left out and the
+          column instead sizes to its header/text content.
+        """
+        merged_anchors = {(rng.min_row, rng.min_col) for rng in ws.merged_cells.ranges}
+        for col_idx in range(1, max_col + 1):
+            column_letter = get_column_letter(col_idx)
+            max_length = 0
+            for cell in ws[column_letter]:
+                if ws.row_dimensions[cell.row].hidden:
+                    continue
+                if (cell.row, cell.column) in merged_anchors:
+                    continue
+                if isinstance(cell.value, (int, float)):
+                    continue
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[column_letter].width = min(max_length + 2, 50)
 
     @classmethod
     def _derive_title(cls, ws) -> str:
@@ -117,6 +173,8 @@ class EmployeeEfficiencyHandler(ReportHandler):
     def strip(self, input_path: Path, output_path: Path) -> StripResult:
         wb = load_workbook(input_path)
         ws = wb.active
+        if ws is None:
+            raise ValueError(f"{input_path} has no active worksheet")
         max_col = ws.max_column
 
         # Derive the title before any row is inserted/moved.
@@ -157,14 +215,19 @@ class EmployeeEfficiencyHandler(ReportHandler):
         # combined.
         title_start_col = min(self._GROUP_HEADERS)
         title_end_col = min(max(self._GROUP_HEADERS) + 2, max_col)
-        ws.cell(row=1, column=title_start_col, value=title)
+        title_cell = ws.cell(row=1, column=title_start_col, value=title)
+        title_cell.font = Font(name='Arial', size=14)
+        title_cell.alignment = Alignment(horizontal='left')
+        ws.row_dimensions[1].height = 18
         if title_end_col > title_start_col:
             ws.merge_cells(start_row=1, start_column=title_start_col, end_row=1, end_column=title_end_col)
 
         # Row 2: Setup/Run group header.
         for start_col, label in self._GROUP_HEADERS.items():
             end_col = min(start_col + 2, max_col)
-            ws.cell(row=2, column=start_col, value=label)
+            group_cell = ws.cell(row=2, column=start_col, value=label)
+            group_cell.font = Font(name='Arial', size=10, bold=True)
+            group_cell.alignment = Alignment(horizontal='center')
             if end_col > start_col:
                 ws.merge_cells(start_row=2, start_column=start_col, end_row=2, end_column=end_col)
 
@@ -184,16 +247,19 @@ class EmployeeEfficiencyHandler(ReportHandler):
         # this is the actual "stripping". Nothing is deleted. The TOTALS
         # marker row has no column-A label of its own (its text is in column
         # B), so it's excluded here and forced visible explicitly below.
-        visible_values = set()
+        filter_values = set()
         visible_count = 0
         hidden_count = 0
         for row_idx in range(header_row + 1, ws.max_row + 1):
             if row_idx == totals_row:
                 continue
             value = ws.cell(row=row_idx, column=1).value
-            if self._is_visible_label(value):
+            text = str(value).strip() if value is not None else ''
+            is_shown = self._is_visible_label(value)
+            if is_shown or text.startswith(self._FOOTNOTE_PREFIX):
+                filter_values.add(str(value))
+            if is_shown:
                 visible_count += 1
-                visible_values.add(str(value))
                 ws.row_dimensions[row_idx].hidden = False
             else:
                 hidden_count += 1
@@ -215,9 +281,18 @@ class EmployeeEfficiencyHandler(ReportHandler):
         )
         table.autoFilter = AutoFilter(
             ref=table_ref,
-            filterColumn=[FilterColumn(colId=0, filters=Filters(filter=sorted(visible_values)))],
+            filterColumn=[FilterColumn(colId=0, filters=Filters(filter=sorted(filter_values)))],
         )
         ws.add_table(table)
+
+        self._autofit_columns(ws, max_col)
+
+        # Hide (not delete) the columns not meaningful for this summary view,
+        # after autofit so a hidden column still remembers a real width --
+        # exactly like a row a person hides in Excel rather than deleting.
+        for col_idx in self._HIDDEN_COLUMNS:
+            if col_idx <= max_col:
+                ws.column_dimensions[get_column_letter(col_idx)].hidden = True
 
         output_path = Path(output_path)
         wb.save(output_path)

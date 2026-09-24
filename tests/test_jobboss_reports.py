@@ -138,8 +138,11 @@ class TestEmployeeEfficiencyStrip:
         assert visibility[8][2] is False
         assert visibility[9][0] == 'Report Total:'
         assert visibility[9][2] is False
+        # The footnote is disclaimer text, not a name or a total -- it stays
+        # hidden behind the filter like any other detail row, even though
+        # it's still one of the values listed in the filter dropdown.
         assert visibility[10][0].startswith('********')
-        assert visibility[10][2] is False
+        assert visibility[10][2] is True
         wb.close()
 
     def test_works_regardless_of_employee_names_or_row_counts(self, tmp_path):
@@ -153,10 +156,10 @@ class TestEmployeeEfficiencyStrip:
         out = tmp_path / 'out.xlsx'
         result = EmployeeEfficiencyHandler().strip(src, out)
 
-        # 3 Employee: + 3 Employee Total: + 1 Report Total: + 1 footnote
-        # + 1 TOTALS marker = 9
-        assert result.visible_rows == 9
-        assert result.hidden_rows == 1 + 5 + 0  # detail rows only
+        # 3 Employee: + 3 Employee Total: + 1 Report Total: + 1 TOTALS
+        # marker = 8 visible; the footnote joins the hidden detail rows.
+        assert result.visible_rows == 8
+        assert result.hidden_rows == 1 + 5 + 0 + 1  # detail rows + footnote
 
     def test_group_header_row_inserted_with_merged_setup_and_run_labels(self, tmp_path):
         src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
@@ -226,6 +229,112 @@ class TestEmployeeEfficiencyStrip:
         EmployeeEfficiencyHandler().strip(src, out)
 
         assert src.read_bytes() == original_bytes
+
+    def test_title_and_group_header_are_styled(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1, ['2025-JAN'])])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb, ws = self._load(out)
+        title_cell = ws.cell(row=1, column=2)
+        assert title_cell.font.size == 14
+        assert ws.row_dimensions[1].height == 18
+        group_cell = ws.cell(row=2, column=2)
+        assert group_cell.font.bold is True
+        assert group_cell.alignment.horizontal == 'center'
+        wb.close()
+
+    def test_columns_are_autofit_to_content(self, tmp_path):
+        # A default/unset column width in openpyxl reads back as None -- every
+        # column actually holding data must come out with an explicit width
+        # sized to its content, not left at Excel's default.
+        src = _build_workbook(tmp_path, [
+            ('EMPA', 'FAKE, EMPLOYEE WITH A VERY LONG NAME INDEED', 1),
+        ])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb, ws = self._load(out)
+        width_a = ws.column_dimensions['A'].width
+        width_c = ws.column_dimensions['C'].width  # holds the long employee name
+        assert width_a is not None and width_a > 0
+        assert width_c is not None and width_c > width_a
+        wb.close()
+
+    def test_autofit_ignores_merged_title_cell_text(self, tmp_path):
+        # The title spans B1:G1 and is much longer than any real column B
+        # value -- Excel's own AutoFit ignores merged-cell content for
+        # exactly this reason, and so must this, or column B balloons to fit
+        # a title that's actually rendered across six columns, not one.
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1, ['2025-JAN'])])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb, ws = self._load(out)
+        title_length = len(ws.cell(row=1, column=2).value)
+        width_b = ws.column_dimensions['B'].width
+        assert width_b < title_length
+        wb.close()
+
+    def test_autofit_ignores_numeric_cell_precision(self, tmp_path):
+        # Hours/percentage cells carry full floating-point precision (e.g.
+        # 114.852138793421 in an Employee Total row) despite already having
+        # their own display number_format -- str(value) on the raw float
+        # would wildly overstate what Excel actually renders.
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb, ws = self._load(out)
+        # Employee Total row (visible) holds long-precision floats in D/E;
+        # neither column should be inflated to fit their raw repr length.
+        assert ws.column_dimensions['D'].width < 15
+        assert ws.column_dimensions['E'].width < 15
+        wb.close()
+
+
+class TestHiddenColumns:
+    """Column A (the "Employee:"/"Employee Total:" label plumbing) and the
+    raw export's unlabeled trailing columns are hidden, not deleted -- same
+    treatment as the hidden detail rows.
+    """
+
+    def test_expected_columns_are_hidden(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        hidden = {c for c, dim in ws.column_dimensions.items() if dim.hidden}
+        assert hidden == {'A', 'H', 'I', 'J', 'K', 'O'}
+        wb.close()
+
+    def test_visible_columns_are_not_hidden(self, tmp_path):
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        for letter in ('B', 'C', 'D', 'E', 'F', 'G', 'L', 'M', 'N'):
+            dim = ws.column_dimensions.get(letter)
+            assert dim is None or not dim.hidden, f"column {letter} should not be hidden"
+        wb.close()
+
+    def test_hidden_column_still_has_a_real_width(self, tmp_path):
+        # Hiding a column via Excel doesn't erase its stored width -- only
+        # deleting it would. Confirms hidden columns go through the same
+        # autofit pass as visible ones, not a zero/blank width.
+        src = _build_workbook(tmp_path, [('EMPA', 'FAKE, EMPLOYEE A', 1)])
+        out = tmp_path / 'out.xlsx'
+        EmployeeEfficiencyHandler().strip(src, out)
+
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        assert ws.column_dimensions['A'].width is not None
+        assert ws.column_dimensions['A'].width > 0
+        wb.close()
 
 
 class TestDerivedTitle:
